@@ -10,7 +10,7 @@
 	#include <fcntl.h>
 	#include <signal.h>
 	#include <sys/ioctl.h>
-#endif  /* end of #ifdef _WIN32 */
+#endif	/* end of #ifdef _WIN32 */
 
 #ifndef __TERMINAL_H__
 #include "terminal.h"
@@ -27,34 +27,28 @@
 #define MY_REALLOC(x, y) realloc((x), (y))
 #endif
 
-#define CTRL_FLAG       (0x01000000)
-#define ALT_FLAG        (0x02000000)
-#define KEY_CTRL(key)   ((key) - 0x40)
-#define KEY_ALT(key)    (ALT_FLAG | (key))
-#define KEY_BACKSPACE   (0x08)
-#define KEY_TAB         (0x09)
-#define KEY_LF          (0x0a)
-#define KEY_CR          (0x0d)
-#define KEY_ESC         (0x1b)
-#define KEY_FUN(num)    ((num) << 8)
-#define KEY_UP          (0x10 << 8)
-#define KEY_DOWN        (0x11 << 8)
-#define KEY_RIGHT       (0x12 << 8)
-#define KEY_LEFT        (0x13 << 8)
-#define KEY_END         (0x14 << 8)
-#define KEY_HOME        (0x15 << 8)
-#define KEY_PGUP        (0x16 << 8)
-#define KEY_PGDN        (0x17 << 8)
-#define KEY_INSERT      (0x18 << 8)
-#define KEY_DELETE      (0x19 << 8)
+#define CTRL_FLAG (0x01000000)
+#define ALT_FLAG (0x02000000)
+#define KEY_CTRL(key) ((key) - 0x40)
+#define KEY_ALT(key) (ALT_FLAG | (key))
+#define KEY_BACKSPACE (0x08)
+#define KEY_TAB (0x09)
+#define KEY_LF (0x0a)
+#define KEY_CR (0x0d)
+#define KEY_ESC (0x1b)
+#define KEY_FUN(num) ((num) << 8)
+#define KEY_UP (0x10 << 8)
+#define KEY_DOWN (0x11 << 8)
+#define KEY_RIGHT (0x12 << 8)
+#define KEY_LEFT (0x13 << 8)
+#define KEY_END (0x14 << 8)
+#define KEY_HOME (0x15 << 8)
+#define KEY_PGUP (0x16 << 8)
+#define KEY_PGDN (0x17 << 8)
+#define KEY_INSERT (0x18 << 8)
+#define KEY_DELETE (0x19 << 8)
 
-#ifdef WATCH_RAM
-#define STATIC_FUNC
-#else
-#define STATIC_FUNC static
-#endif
-
-STATIC_FUNC int isdelimiter(char ch) {
+int isdelimiter(char ch) {
 	int i = 0;
 	const char *target = " !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
 
@@ -100,11 +94,11 @@ int term_printf(TERMINAL *term, const char *format, ...) {
 	return rc;
 }
 
-STATIC_FUNC int term_command_write(TERMINAL *term, const void *content, size_t count) {
+int term_command_write(TERMINAL *term, const void *content, size_t count) {
 	return tt_buffer_write(&(term->line_command), content, count);
 }
 
-STATIC_FUNC int term_command_vprintf(TERMINAL *term, const char *format, va_list args) {
+int term_command_vprintf(TERMINAL *term, const char *format, va_list args) {
 	int ret = -1;
 
 	if (0 != tt_buffer_vprintf(&(term->line_command), format, args)) {
@@ -115,7 +109,7 @@ exit:
 	return ret;
 }
 
-STATIC_FUNC int term_command_printf(TERMINAL *term, const char *format, ...) {
+int term_command_printf(TERMINAL *term, const char *format, ...) {
 	int rc;
 	va_list args;
 	va_start(args, format);
@@ -124,7 +118,7 @@ STATIC_FUNC int term_command_printf(TERMINAL *term, const char *format, ...) {
 	return rc;
 }
 
-STATIC_FUNC void term_free_args(TERMINAL *term) {
+void term_free_args(TERMINAL *term) {
 	TERM_ARGS *p_cur = NULL, *p_next = NULL;
 
 	for (p_cur = term->command_args; p_cur != NULL; p_cur = p_next) {
@@ -139,7 +133,7 @@ STATIC_FUNC void term_free_args(TERMINAL *term) {
 
 extern int term_readline(TERMINAL *term);
 /* term_split_args return 1 if need continue read content */
-STATIC_FUNC int term_split_args(TERMINAL *term) {
+int term_split_args(TERMINAL *term) {
 	int ret = 0;
 	const char *start = NULL, *end = NULL;
 	TERM_ARGS *p_new = NULL, *p_tail = NULL;
@@ -165,12 +159,11 @@ STATIC_FUNC int term_split_args(TERMINAL *term) {
 
 	while (1) { /* parse all content */
 		if (in_quot == '\0') {
-			for (; *start == ' '; start++) { /* move start for skip SPACE at linehead */
-			}
+			for (; *start == ' '; start++); /* move start for skip SPACE at linehead */
 		}
 		for (end = start; ; end++) { /* parse one argumeng */
-			if ((*end == '"' || *end == '\'') && (end == start || *(end - 1) != '\\')) { /* found '"' or '\'' */
-				if (!in_quot) { /* found quot */
+			if ((*end == '"' || *end == '\'') && (end == start || *(end - 1) != '\\')) { /* found '"' or '\'' and no escape(\) */
+				if (in_quot == '\0') { /* found quot */
 					in_quot = *end;
 				} else if (*end == in_quot) { /* end quot */
 					in_quot = '\0';
@@ -257,11 +250,11 @@ exit:
 	return ret;
 }
 
-STATIC_FUNC int term_getch(TERMINAL *term) {
+int term_getch(TERMINAL *term) {
 	char key = 0;
 	struct termios old_term, cur_term;
 
-	if (tcgetattr(STDIN_FILENO, &old_term) < 0)	{ perror("tcsetattr"); }
+	if (tcgetattr(STDIN_FILENO, &old_term) < 0) { perror("tcsetattr"); }
 	cur_term = old_term;
 	cur_term.c_lflag &= ~(ICANON | ECHO | ISIG); // echoing off, canonical off, no signal chars
 	cur_term.c_cc[VMIN] = 1;
@@ -273,7 +266,7 @@ STATIC_FUNC int term_getch(TERMINAL *term) {
 	return key;
 }
 
-STATIC_FUNC void term_screen_get(TERMINAL *term, int *cols, int *rows) {
+void term_screen_get(TERMINAL *term, int *cols, int *rows) {
 	struct winsize ws = {0};
 
 	ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws);
@@ -283,15 +276,15 @@ STATIC_FUNC void term_screen_get(TERMINAL *term, int *cols, int *rows) {
 	*rows = *rows > 1 ? *rows : 24;
 }
 
-STATIC_FUNC void term_cursor_move(TERMINAL *term, int col_off, int row_off) {
+void term_cursor_move(TERMINAL *term, int col_off, int row_off) {
 	if (col_off > 0) {
 		term_printf(term, "\e[%dC", col_off);
-	} else if (col_off < 0)	{
+	} else if (col_off < 0) {
 		term_printf(term, "\e[%dD", -col_off);
 	}
 	if (row_off > 0) {
 		term_printf(term, "\e[%dB", row_off);
-	} else if (row_off < 0)	{
+	} else if (row_off < 0) {
 		term_printf(term, "\e[%dA", -row_off);
 	}
 }
@@ -346,10 +339,11 @@ void term_prompt_color_set(TERMINAL *term, unsigned int color) {
 	term->prompt_color = color;
 }
 
-STATIC_FUNC void term_print_prompt(TERMINAL *term) {
+void term_print_prompt(TERMINAL *term) {
 	if (!term->multiline) {
 		term_color_set(term, term->prompt_color);
 		term_printf(term, term->prompt);
+		term_printf(term, " ");
 		term_color_set(term, TERM_COLOR_DEFAULT);
 	} else {
 		term_printf(term, "> ");
@@ -403,7 +397,7 @@ void term_event_bind(TERMINAL *term, void (*cb)(TERMINAL *term)) {
 	term->event_cb = cb;
 }
 
-STATIC_FUNC void history_free(struct ST_TERM_STRINGS **p_head) {
+void history_free(struct ST_TERM_STRINGS **p_head) {
 	struct ST_TERM_STRINGS *p_cur = NULL, *p_prev = NULL;
 
 	for (p_cur = (*p_head); p_cur != NULL; p_cur = p_prev) {
@@ -416,7 +410,7 @@ STATIC_FUNC void history_free(struct ST_TERM_STRINGS **p_head) {
 	*p_head = NULL;
 }
 
-STATIC_FUNC void wordhelp_free(struct ST_TERM_WORDHELP **p_head) {
+void wordhelp_free(struct ST_TERM_WORDHELP **p_head) {
 	struct ST_TERM_WORDHELP *p_cur = NULL, *p_next = NULL;
 
 	for (p_cur = (*p_head); p_cur != NULL; p_cur = p_next) {
@@ -445,7 +439,7 @@ void term_free(TERMINAL *term) {
 	memset(term, 0x00, sizeof(TERMINAL));
 }
 
-STATIC_FUNC int term_getkey(TERMINAL *term) {
+int term_getkey(TERMINAL *term) {
 	int num1 = 0, num2 = 0;
 	int key = 0;
 
@@ -463,7 +457,7 @@ STATIC_FUNC int term_getkey(TERMINAL *term) {
 					} while (key >= '0' && key <= '9');
 					switch (key) {
 						case '~':
-							switch (num1) { /* <ESC>1~  <ESC>[15~ */
+							switch (num1) { /* <ESC>1~	<ESC>[15~ */
 								case 1: return KEY_HOME;
 								case 2: return KEY_INSERT;
 								case 3: return KEY_DELETE;
@@ -548,12 +542,12 @@ STATIC_FUNC int term_getkey(TERMINAL *term) {
 	return key;
 }
 
-STATIC_FUNC void term_refresh(TERMINAL *term, int pos, int num, int chg_pos) {
+void term_refresh(TERMINAL *term, int pos, int num, int chg_pos) {
 	int i = 0, ret = 0, prompt_len = 0, pos_row = 0, pos_col = 0;;
 	int rows = 0, cols = 0;
 
 	term_screen_get(term, &cols, &rows);
-	prompt_len = strlen(term->prompt);
+	prompt_len = strlen(term->prompt) + 1; /* 1: will add space after prompt */
 
 	if (chg_pos >= 0) { /* update changes */
 		term->line_command.content[num] = '\0';
@@ -590,7 +584,7 @@ STATIC_FUNC void term_refresh(TERMINAL *term, int pos, int num, int chg_pos) {
 	term->line_command.used = num;
 }
 
-STATIC_FUNC void term_wordhelp_free(struct ST_TERM_WORDHELP **wordhelp) {
+void term_wordhelp_free(struct ST_TERM_WORDHELP **wordhelp) {
 	struct ST_TERM_WORDHELP *p_next = NULL, *p_cur = NULL;
 
 	for (p_cur = *wordhelp; p_cur != NULL; p_cur = p_next) {
@@ -604,7 +598,7 @@ STATIC_FUNC void term_wordhelp_free(struct ST_TERM_WORDHELP **wordhelp) {
 	*wordhelp = NULL;
 }
 
-STATIC_FUNC void term_wordhelp_add(struct ST_TERM_WORDHELP **wordhelp, const char *word, const char *help) {
+void term_wordhelp_add(struct ST_TERM_WORDHELP **wordhelp, const char *word, const char *help) {
 	int ret = -1;
 	struct ST_TERM_WORDHELP *p_new = NULL, *p_cur = NULL;
 
@@ -650,7 +644,7 @@ exit:
 	return;
 }
 
-STATIC_FUNC void term_complete_free(TERMINAL *term) {
+void term_complete_free(TERMINAL *term) {
 	term_wordhelp_free(&(term->complete));
 }
 
@@ -658,7 +652,7 @@ void term_complete_add(TERMINAL *term, TERM_ARGS *p_arg, const char *word, const
 	term_wordhelp_add(&(term->complete), word, help);
 }
 
-STATIC_FUNC void term_hints_free(TERMINAL *term) {
+void term_hints_free(TERMINAL *term) {
 	term_wordhelp_free(&(term->hints));
 }
 
@@ -669,7 +663,7 @@ void term_hints_add(TERMINAL *term, TERM_ARGS *p_arg, const char *word, const ch
 }
 
 /* TODO for argument around by '"' or '\'' */
-STATIC_FUNC void term_history_add(TERMINAL *term) {
+void term_history_add(TERMINAL *term) {
 	int ret = -1, i = 0;
 	size_t len = 0;
 	TERM_ARGS *p_arg = NULL;
@@ -732,7 +726,7 @@ exit:
 	return;
 }
 
-STATIC_FUNC void term_completion(TERMINAL *term) {
+void term_completion(TERMINAL *term) {
 	int comman_len = 0, overlay = 0, start_pos = 0, end_pos = 0, has_change = 0;
 	int i = 0, word_width = 0, with_help = 0, rows = 0, cols = 0, words_len = 0, word_num = 0;
 	TERM_COMPLETE *p_cur = NULL;
@@ -815,7 +809,7 @@ STATIC_FUNC void term_completion(TERMINAL *term) {
 					term_printf(term, "%s", p_cur->word);
 					term_color_set(term, TERM_COLOR_DEFAULT);
 					if (p_cur->help != NULL) {
-						term_printf(term, "%*s   %s\n", word_width - strlen(p_cur->word), "", p_cur->help);
+						term_printf(term, "%*s	 %s\n", word_width - strlen(p_cur->word), "", p_cur->help);
 					} else {
 						term_printf(term, "\n"); /* show word only if help is NULL */
 					}
@@ -825,7 +819,7 @@ STATIC_FUNC void term_completion(TERMINAL *term) {
 					term_printf(term, "%s", p_cur->word);
 					term_color_set(term, TERM_COLOR_DEFAULT);
 					if (p_cur->help != NULL) {
-						term_printf(term, "%*s   %s\n", word_width - strlen(p_cur->word), "", p_cur->help);
+						term_printf(term, "%*s	 %s\n", word_width - strlen(p_cur->word), "", p_cur->help);
 					} else {
 						term_printf(term, "\n");
 					}
@@ -902,7 +896,7 @@ STATIC_FUNC void term_completion(TERMINAL *term) {
 	term_hints_free(term);
 }
 
-STATIC_FUNC void term_execute(TERMINAL *term) {
+void term_execute(TERMINAL *term) {
 	int i = 0;
 	TERM_ARGS *p_arg = NULL;
 
@@ -1008,11 +1002,11 @@ int term_readline(TERMINAL *term) {
 						term_refresh(term, term->pos + 1, term->num, -1);
 					}
 					break;
-				case KEY_CTRL('A'):	// Move cursor to start of line.
+				case KEY_CTRL('A'): // Move cursor to start of line.
 				case KEY_HOME:
 					term_refresh(term, 0, term->num, -1);
 					break;
-				case KEY_CTRL('E'):	// Move cursor to end of line
+				case KEY_CTRL('E'): // Move cursor to end of line
 				case KEY_END:
 					term_refresh(term, term->num, term->num, -1);
 					break;
@@ -1121,6 +1115,9 @@ int term_readline(TERMINAL *term) {
 							need_exit = -1;
 						}
 					}
+					break;
+				case KEY_CTRL('Z'):
+					raise(SIGSTOP);
 					break;
 				default:
 					if (key >= ' ' && key <= '~') { /* key value may be too large, must not use isprint(key) */

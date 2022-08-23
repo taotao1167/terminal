@@ -49,9 +49,9 @@ void term_event_dispatch(TERMINAL *term) {
 			term->event = E_EVENT_NONE;
 		}
 	}
-	if (keyword(term, p_arg, "set", "set", NULL) & MATCH_ACT_FORWARD) {
-		if (keyword(term, p_arg->next, "prompt", "prompt", NULL) & MATCH_ACT_FORWARD) {
-			if (argument(term, p_arg->next->next, "content", NULL) & MATCH_ACT_EXEC) {
+	if (keyword(term, p_arg, "set", "set", "set action") & MATCH_ACT_FORWARD) {
+		if (keyword(term, p_arg->next, "prompt", "prompt", "set prompt") & MATCH_ACT_FORWARD) {
+			if (argument(term, p_arg->next->next, "content", "prompt contect") & MATCH_ACT_EXEC) {
 				term_init(&pwd_term, "password: ", NULL);
 				pwd_term.mask = 1;
 				if (term_readline(&pwd_term) == 0) {
@@ -99,6 +99,10 @@ void term_event_dispatch(TERMINAL *term) {
 		term_exit(term);
 		term->event = E_EVENT_NONE;
 	}
+	if (keyword(term, p_arg, "quit", "quit", NULL) & MATCH_ACT_EXEC) {
+		term_exit(term);
+		term->event = E_EVENT_NONE;
+	}
 	return;
 }
 
@@ -106,9 +110,9 @@ int main() {
 	TERMINAL term;
 
 #if 1
-	term_init(&term, "kyland$ ", term_event_dispatch);
+	term_init(&term, "test$", term_event_dispatch);
 #else
-	term_init(&term, "kyland$ ", NULL);
+	term_init(&term, "test$", NULL);
 	term_event_bind(&term, term_event_dispatch);
 #endif
 	term_prompt_color_set(&term, TERM_FGCOLOR_BRIGHT_GREEN | TERM_STYLE_BOLD);
