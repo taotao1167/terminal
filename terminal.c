@@ -3,14 +3,26 @@
 #include <string.h>
 #include <stdarg.h>
 
-#ifdef _WIN32
+#if defined(_WIN32)
+	#include <io.h>
+	#include <conio.h>
+	#include <windows.h>
+	#ifndef STDIN_FILENO
+		#define STDIN_FILENO _fileno(stdin)
+		#define STDOUT_FILENO _fileno(stdout)
+	#endif
+	#define strcasecmp _stricmp
+	#define strncasecmp _strnicmp
+	#define read _read
+	#define write _write
+	#define isatty _isatty
 #else /* Linux */
 	#include <unistd.h>
 	#include <termios.h>
 	#include <fcntl.h>
 	#include <signal.h>
 	#include <sys/ioctl.h>
-#endif	/* end of #ifdef _WIN32 */
+#endif	/* end of #if defined(_WIN32) */
 
 #ifndef __TERMINAL_H__
 #include "terminal.h"
@@ -252,31 +264,58 @@ exit:
 
 int term_getch(TERMINAL *term) {
 	char key = 0;
+#if defined(_WIN32)
+	fflush (stdout);
+	key = _getch();
+#else
 	struct termios old_term, cur_term;
 
-	if (tcgetattr(STDIN_FILENO, &old_term) < 0) { perror("tcsetattr"); }
+	if (tcgetattr(STDIN_FILENO, &old_term) < 0) {
+		perror("tcsetattr");
+	}
 	cur_term = old_term;
 	cur_term.c_lflag &= ~(ICANON | ECHO | ISIG); // echoing off, canonical off, no signal chars
 	cur_term.c_cc[VMIN] = 1;
 	cur_term.c_cc[VTIME] = 0;
-	if (tcsetattr(STDIN_FILENO, TCSANOW, &cur_term) < 0)	{ perror("tcsetattr"); }
-	if (term->read(&key, 1) < 0)	{ perror("term->read()"); }
-	if (tcsetattr(STDIN_FILENO, TCSADRAIN, &old_term) < 0)	{ perror("tcsetattr"); }
+	if (tcsetattr(STDIN_FILENO, TCSANOW, &cur_term) < 0) {
+		perror("tcsetattr");
+	}
+	if (term->read(&key, 1) < 0) {
+		perror("term->read()");
+	}
+	if (tcsetattr(STDIN_FILENO, TCSADRAIN, &old_term) < 0) {
+		perror("tcsetattr");
+	}
 	// printf("%3d 0x%02x (%c)\n", key, key, isprint(key) ? key : ' ');
+#endif
 	return key;
 }
 
 void term_screen_get(TERMINAL *term, int *cols, int *rows) {
+#if defined(_WIN32)
+	CONSOLE_SCREEN_BUFFER_INFO inf;
+	GetConsoleScreenBufferInfo (GetStdHandle(STD_OUTPUT_HANDLE), &inf);
+	*cols = inf.srWindow.Right - inf.srWindow.Left + 1;
+	*rows = inf.srWindow.Bottom - inf.srWindow.Top + 1;
+#else
 	struct winsize ws = {0};
 
 	ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws);
 	*cols = ws.ws_col;
 	*rows = ws.ws_row;
+#endif
 	*cols = *cols > 1 ? *cols : 80;
 	*rows = *rows > 1 ? *rows : 24;
 }
 
 void term_cursor_move(TERMINAL *term, int col_off, int row_off) {
+#if defined(_WIN32)
+	CONSOLE_SCREEN_BUFFER_INFO inf;
+	GetConsoleScreenBufferInfo (GetStdHandle(STD_OUTPUT_HANDLE), &inf);
+	inf.dwCursorPosition.Y += (SHORT)row_off;
+	inf.dwCursorPosition.X += (SHORT)col_off;
+	SetConsoleCursorPosition (GetStdHandle(STD_OUTPUT_HANDLE), inf.dwCursorPosition);
+#else
 	if (col_off > 0) {
 		term_printf(term, "\e[%dC", col_off);
 	} else if (col_off < 0) {
@@ -287,9 +326,50 @@ void term_cursor_move(TERMINAL *term, int col_off, int row_off) {
 	} else if (row_off < 0) {
 		term_printf(term, "\e[%dA", -row_off);
 	}
+#endif
 }
 
 void term_color_set(TERMINAL *term, unsigned int color) {
+#if defined(_WIN32)
+	CONSOLE_SCREEN_BUFFER_INFO info;
+	static WORD dft_wAttributes = 0;
+	WORD wAttributes = 0;
+	if (!dft_wAttributes) {
+		GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info);
+		dft_wAttributes = info.wAttributes;
+	}
+	if (0 == (color & 0xff)) {
+		wAttributes |= dft_wAttributes & (FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+	} else {
+		wAttributes |= (color >= TERM_FGCOLOR_BRIGHT_BLACK) ? FOREGROUND_INTENSITY : 0;
+		switch (color & 0xff) {
+			case TERM_FGCOLOR_BRIGHT_RED:  	wAttributes |= FOREGROUND_RED;	break;
+			case TERM_FGCOLOR_BRIGHT_GREEN:  	wAttributes |= FOREGROUND_GREEN;break;
+			case TERM_FGCOLOR_BRIGHT_BLUE:  	wAttributes |= FOREGROUND_BLUE;	break;
+			case TERM_FGCOLOR_BRIGHT_YELLOW:  wAttributes |= FOREGROUND_RED | FOREGROUND_GREEN;	break;
+			case TERM_FGCOLOR_BRIGHT_MAGENTA: wAttributes |= FOREGROUND_RED | FOREGROUND_BLUE;	break;
+			case TERM_FGCOLOR_BRIGHT_CYAN:	wAttributes |= FOREGROUND_GREEN | FOREGROUND_BLUE;	break;
+			case TERM_FGCOLOR_BRIGHT_WHITE:   wAttributes |= FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;break;
+		}
+	}
+	if (TERM_BGCOLOR_DEFAULT == (color & 0xff00)) {
+		wAttributes |= dft_wAttributes & (BACKGROUND_RED | BACKGROUND_GREEN | BACKGROUND_BLUE | BACKGROUND_INTENSITY);
+	} else {
+		wAttributes |= (color >= TERM_BGCOLOR_BRIGHT_BLACK) ? BACKGROUND_INTENSITY : 0;
+		switch ((color & 0xff00)) {
+			case TERM_BGCOLOR_BRIGHT_RED:  	wAttributes |= BACKGROUND_RED;	break;
+			case TERM_BGCOLOR_BRIGHT_GREEN:  	wAttributes |= BACKGROUND_GREEN;break;
+			case TERM_BGCOLOR_BRIGHT_BLUE:  	wAttributes |= BACKGROUND_BLUE;	break;
+			case TERM_BGCOLOR_BRIGHT_YELLOW:  wAttributes |= BACKGROUND_RED | BACKGROUND_GREEN;	break;
+			case TERM_BGCOLOR_BRIGHT_MAGENTA: wAttributes |= BACKGROUND_RED | BACKGROUND_BLUE;	break;
+			case TERM_BGCOLOR_BRIGHT_CYAN:	wAttributes |= BACKGROUND_GREEN | BACKGROUND_BLUE;	break;
+			case TERM_BGCOLOR_BRIGHT_WHITE:   wAttributes |= BACKGROUND_RED | BACKGROUND_GREEN | BACKGROUND_BLUE;break;
+		}
+	}
+	if (color & TERM_STYLE_UNDERSCORE)
+		{ wAttributes |= COMMON_LVB_UNDERSCORE; }
+	SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), wAttributes);
+#else
 	term_printf(term, "\033[0m");
 	if (color & 0xff) {
 		term_printf(term, "\033[%dm", color & 0xff);
@@ -309,6 +389,7 @@ void term_color_set(TERMINAL *term, unsigned int color) {
 	if (color & TERM_STYLE_INVERSE) {
 		term_printf(term, "\033[7m");
 	}
+#endif
 }
 
 int term_prompt_set(TERMINAL *term, const char *prompt) {
@@ -339,6 +420,10 @@ void term_prompt_color_set(TERMINAL *term, unsigned int color) {
 	term->prompt_color = color;
 }
 
+void term_prompt_userdata_set(TERMINAL *term, void *userdata) {
+	term->userdata = userdata;
+}
+
 void term_print_prompt(TERMINAL *term) {
 	if (!term->multiline) {
 		term_color_set(term, term->prompt_color);
@@ -359,7 +444,7 @@ ssize_t write_std(const void *buf, size_t count) {
 	return write(STDOUT_FILENO, buf, count);
 }
 
-int term_init(TERMINAL *term, const char *prompt, void (*cb)(TERMINAL *term)) {
+int term_init(TERMINAL *term, const char *prompt, int (*cb)(TERMINAL *term)) {
 	int not_support = 0;
 	char *term_env = NULL;
 
@@ -393,7 +478,7 @@ int term_init(TERMINAL *term, const char *prompt, void (*cb)(TERMINAL *term)) {
 	return 0;
 }
 
-void term_event_bind(TERMINAL *term, void (*cb)(TERMINAL *term)) {
+void term_event_bind(TERMINAL *term, int (*cb)(TERMINAL *term)) {
 	term->event_cb = cb;
 }
 
@@ -443,6 +528,24 @@ int term_getkey(TERMINAL *term) {
 	int num1 = 0, num2 = 0;
 	int key = 0;
 
+#if defined(_WIN32)
+	key = term_getch(term);
+	if ((unsigned char)key == 0xe0) { /* extern */
+		key = term_getch(term);
+		switch (key) {
+			case 0x47: return KEY_HOME;
+			case 0x48: return KEY_UP;
+			case 0x4b: return KEY_LEFT;
+			case 0x4d: return KEY_RIGHT;
+			case 0x4f: return KEY_END;
+			case 0x50: return KEY_DOWN;
+			case 0x73: return KEY_CTRL(KEY_LEFT);
+			case 0x74: return KEY_CTRL(KEY_RIGHT);
+		}
+	} else if (key == 0x7f) {
+		return KEY_BACKSPACE;
+	}
+#else
 	key = term_getch(term);
 	if (KEY_ESC == key) { /* need escape */
 		key = term_getch(term);
@@ -539,6 +642,7 @@ int term_getkey(TERMINAL *term) {
 	} else if (key == 0x7f) {
 		return KEY_BACKSPACE;
 	}
+#endif
 	return key;
 }
 
@@ -737,6 +841,8 @@ void term_completion(TERMINAL *term) {
 	}
 	term_split_args(term);
 	/* find completion and help info */
+	term->arg_prev = term->arg_cur = NULL;
+	term->arg_next = term->command_args;
 	term->event = E_EVENT_COMPLETE;
 	term->event_cb(term);
 	term->event = E_EVENT_NONE;
@@ -897,18 +1003,22 @@ void term_completion(TERMINAL *term) {
 }
 
 void term_execute(TERMINAL *term) {
-	int i = 0;
+	int i = 0, ret = 0;
 	TERM_ARGS *p_arg = NULL;
 
 	term_history_add(term);
 	term->event = E_EVENT_EXEC;
+	term->arg_prev = term->arg_cur = NULL;
+	term->arg_next = term->command_args;
 	if (term->event_cb != NULL) {
-		term->event_cb(term);
-		if (term->event == E_EVENT_EXEC) {
-			term_printf(term, "command not found:\n");
+		ret = term->event_cb(term);
+		if (ret != 0) {
+			term_printf(term, "command not found.\n");
+#if 0
 			for (i = 0, p_arg = term->command_args; p_arg != NULL; p_arg = p_arg->next, i++) {
 				term_printf(term, "\targ[%d]: \"%s\"\n", i, p_arg->content);
 			}
+#endif
 			term->event = E_EVENT_NONE;
 		}
 	}
@@ -916,8 +1026,9 @@ void term_execute(TERMINAL *term) {
 	term_hints_free(term);
  }
 
-int argument(TERMINAL *term, TERM_ARGS *p_arg, const char *word, const char *help) {
+int argument(TERMINAL *term, const char *word, const char *help) {
 	int result = 0;
+	TERM_ARGS *p_arg = term->arg_cur;
 
 	if (term->event == E_EVENT_COMPLETE || term->event == E_EVENT_HELP) {
 		if (p_arg == NULL || p_arg->endword) {
@@ -929,7 +1040,10 @@ int argument(TERMINAL *term, TERM_ARGS *p_arg, const char *word, const char *hel
 	}
 	if (term->event == E_EVENT_EXEC) {
 		if (p_arg != NULL) {
-			result |= MATCH_ACT_EXEC;
+			if (p_arg->next == NULL) {
+				result |= MATCH_ACT_EXEC;
+				term->event = E_EVENT_NONE;
+			}
 			if (!p_arg->endword) {
 				result |= MATCH_ACT_FORWARD;
 			}
@@ -938,8 +1052,9 @@ int argument(TERMINAL *term, TERM_ARGS *p_arg, const char *word, const char *hel
 	return result;
 }
 
-int keyword(TERMINAL *term, TERM_ARGS *p_arg, const char *target, const char *word, const char *help) {
+int keyword(TERMINAL *term, const char *target, const char *word, const char *help) {
 	int result = 0;
+	TERM_ARGS *p_arg = term->arg_cur;
 
 	if (p_arg == NULL || *(p_arg->content) == '\0') {
 		result |= MATCH_EMPTY;
@@ -963,13 +1078,16 @@ int keyword(TERMINAL *term, TERM_ARGS *p_arg, const char *target, const char *wo
 		}
 	} else if (term->event == E_EVENT_EXEC) {
 		if (result & MATCH_ENTIRE) {
-			result |= MATCH_ACT_EXEC;
+			if (p_arg->next == NULL) {
+				result |= MATCH_ACT_EXEC;
+				term->event = E_EVENT_NONE;
+			}
 			if (!p_arg->endword) { /* line_command end with SPACE */
 				result |= MATCH_ACT_FORWARD;
 			}
 		}
 	}
-	if (result & MATCH_ACT_EXPAND) {
+	if ((result & MATCH_ACT_EXPAND) && (!p_arg || (p_arg->endword && !p_arg->next))) {
 		term_complete_add(term, p_arg, word, help);
 	}
 	return result;
@@ -1071,7 +1189,7 @@ int term_readline(TERMINAL *term) {
 						term->line_command.used -= 1;
 						term_refresh(term, term->pos, term->num - 1, term->pos);
 					} else if ((0 == term->line_command.used) && (key == KEY_CTRL('D'))) { // If an empty line, EOF
-						term_printf(term, "\n");
+						term_printf(term, "exit because press Ctrl+D\n");
 						need_exit = -1;
 					}
 					break;
@@ -1097,27 +1215,30 @@ int term_readline(TERMINAL *term) {
 					break;
 				case KEY_CTRL('C'):
 				case KEY_CTRL('G'):
-					if (key == KEY_CTRL('C')) {
-						term_printf(term, "^C\n");
-					} else {
-						term_printf(term, "^G\n");
-					}
 					if (term->multiline) {
 						term->multiline = 0;
+						term_printf(term, "%s\n", (key == KEY_CTRL('C')) ? "^C" : "^G");
 						tt_buffer_empty(&(term->prefix));
 						term_print_prompt(term);
 						term_refresh(term, 0, 0, 0);
 					} else {
 						if (term->num > 0) {
+							term_printf(term, "%s\n", (key == KEY_CTRL('C')) ? "^C" : "^G");
 							term_print_prompt(term);
 							term_refresh(term, 0, 0, 0);
 						} else {
+							term_printf(term, "exit because press Ctrl+%s\n", (key == KEY_CTRL('C')) ? "C" : "G");
 							need_exit = -1;
 						}
 					}
 					break;
 				case KEY_CTRL('Z'):
+#if defined(_WIN32)
+					term_printf(term, "exit because press Ctrl+Z\n");
+					need_exit = -1;
+#else
 					raise(SIGSTOP);
+#endif
 					break;
 				default:
 					if (key >= ' ' && key <= '~') { /* key value may be too large, must not use isprint(key) */
@@ -1152,4 +1273,23 @@ int term_readline(TERMINAL *term) {
 	}
 	return 0;
 }
-
+TERM_ARGS *term_argpush(TERMINAL *term) {
+	term->arg_prev = term->arg_cur;
+	term->arg_cur = term->arg_next;
+	if (term->arg_cur) {
+		term->arg_next = term->arg_cur->next;
+	} else {
+		term->arg_next = NULL;
+	}
+	return term->arg_cur;
+}
+TERM_ARGS *term_argpop(TERMINAL *term) {
+	term->arg_next = term->arg_cur;
+	term->arg_cur = term->arg_prev;
+	if (term->arg_cur) {
+		term->arg_prev = term->arg_cur->prev;
+	} else {
+		term->arg_prev = NULL;
+	}
+	return term->arg_cur;
+}

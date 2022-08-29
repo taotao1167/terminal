@@ -2,6 +2,9 @@
 #define __TERMINAL_H__
 
 #include <stdarg.h>
+#if defined(_WIN32)
+#define ssize_t size_t
+#endif
 #include "tt_buffer.h"
 
 #ifdef __cplusplus
@@ -106,14 +109,16 @@ struct ST_TERMINAL {
 	int exit_flag; /* set true when need exit term_readline */
 	TERM_EVENT event;
 	TERM_ARGS *command_args;
+	TERM_ARGS *arg_prev, *arg_next, *arg_cur; /* save node for argpush/argpop */
 	TERM_COMPLETE *complete;
 	TERM_HINTS *hints;
 	ssize_t (*read)(void *buf, size_t count);
 	ssize_t (*write)(const void *buf, size_t count);
-	void (*event_cb)(TERMINAL *term);
+	int (*event_cb)(TERMINAL *term);
+	void *userdata; /* set by term_prompt_userdata_set */
 };
 
-extern int term_init(TERMINAL *term, const char *prompt, void (*cb)(TERMINAL *term));
+extern int term_init(TERMINAL *term, const char *prompt, int (*cb)(TERMINAL *term));
 extern void term_exit(TERMINAL *term);
 extern void term_free(TERMINAL *term);
 extern int term_vprintf(TERMINAL *term, const char *format, va_list args);
@@ -121,10 +126,13 @@ extern int term_printf(TERMINAL *term, const char *format, ...);
 extern void term_color_set(TERMINAL *term, unsigned int color);
 extern int term_prompt_set(TERMINAL *term, const char *prompt);
 extern void term_prompt_color_set(TERMINAL *term, unsigned int color);
-extern void term_event_bind(TERMINAL *term, void (*cb)(TERMINAL *term));
+extern void term_prompt_userdata_set(TERMINAL *term, void *userdata);
+extern void term_event_bind(TERMINAL *term, int (*cb)(TERMINAL *term));
 extern int term_readline(TERMINAL *term);
-extern int keyword(TERMINAL *term, TERM_ARGS *p_arg, const char *target, const char *word, const char *help);
-extern int argument(TERMINAL *term, TERM_ARGS *p_arg, const char *word, const char *help);
+extern TERM_ARGS *term_argpush(TERMINAL *term);
+extern TERM_ARGS *term_argpop(TERMINAL *term);
+extern int keyword(TERMINAL *term, const char *target, const char *word, const char *help);
+extern int argument(TERMINAL *term, const char *word, const char *help);
 
 #ifdef __cplusplus
 }
