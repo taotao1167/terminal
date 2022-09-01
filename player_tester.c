@@ -44,7 +44,7 @@ PI_LIST g_players;
 PI_LIST g_windows;
 
 #if defined(_WIN32)
-const char *picfmt_name[] = {"nv12", "inv", "inv", "argb", "rgb24", "i420"};
+const char *picfmt_name[] = {"nv12", "bgr", "inv", "argb", "rgb24", "i420"};
 #else
 const char *picfmt_name[] = {"nv12", "inv", "inv", "bgra", "rgb24", "i420"};
 #endif
@@ -75,6 +75,18 @@ LRESULT CALLBACK WindowProc(_In_ HWND hwnd, _In_ UINT uMsg, _In_  WPARAM wParam,
 				}
 			}
 			return 0;
+		case WM_SIZE:
+			uint32_t new_width = LOWORD(lParam);
+			uint32_t new_height = HIWORD(lParam);
+			for (entry = g_windows.head; entry != NULL; entry = entry->next) {
+				window = (WINDOW_STATE *)entry->payload;
+				if (window->hwnd == hwnd) {
+					window->width = new_width;
+					window->height = new_height;
+					break;
+				}
+			}
+			break;
 		case WM_DESTROY:
 			// do nothing, "PostQuitMessage(0);" will destroy all windows.
 			return 0;
@@ -101,11 +113,17 @@ static int videoCallback(void *opaque, void*frame, int *size, int64_t stamp, int
 	FILE *fout = NULL;
 	char fname[64] = {0};
 
+	if (frame == NULL) {
+		printf("frame is NULL\n");
+		return 0;
+	}
 	if (((PLAYER_STATE *)opaque)->savedata) {
 		sprintf(fname, "%p_%dx%d_%s.%s", ((PLAYER_STATE *)opaque)->mp, width, height, picfmt_name[picfmt], suffix[picfmt]);
 		fout = fopen(fname, "ab");
-		fwrite(frame, *size, 1, fout);
-		fclose(fout);
+		if (fout != NULL) {
+			fwrite(frame, *size, 1, fout);
+			fclose(fout);
+		}
 	}
 	// printf("%s %dx%d %s\n", __func__, width, height, picfmt_name[picfmt]);
 	return 0;
@@ -133,6 +151,8 @@ void set_player_videocallback(USERDATA *userdata, const char *fmt, int savedata,
 		picfmt = 5;
 	} else if (!strcmp(fmt, "nv12")) {
 		picfmt = 0;
+	} else if (!strcmp(fmt, "bgr")) {
+		picfmt = 1;
 	} else if (!strcmp(fmt, "argb")) {
 		picfmt = 3;
 	} else if (!strcmp(fmt, "rgb24")) {
@@ -141,7 +161,7 @@ void set_player_videocallback(USERDATA *userdata, const char *fmt, int savedata,
 		picfmt = 5;
 	}
 	arg[0] = (int64_t)player_state;
-	arg[1] = (int64_t)(with_ei ? videoCallbackEI : videoCallback);
+	arg[1] = (int64_t)(with_ei ? (uintptr_t)videoCallbackEI : (uintptr_t)videoCallback);
 	arg[2] = picfmt;
 	arg[3] = 0;
 	arg[4] = 0;
@@ -149,7 +169,7 @@ void set_player_videocallback(USERDATA *userdata, const char *fmt, int savedata,
 	printf("set videocallback for %p success.\n", player_state->mp);
 }
 static void player_set(TERMINAL *term, PLAYER_STATE *player) {
-	char *new_prompt[80] = {0};
+	char new_prompt[80] = {0};
 	((USERDATA *)(term->userdata))->mode = MODE_PLAYER;
 	((USERDATA *)(term->userdata))->player_state = player;
 	((USERDATA *)(term->userdata))->prompts[0] = strdup(term->prompt); /* backup */
@@ -160,7 +180,7 @@ void player_create(TERMINAL *term, const char *name, const char *url, void *hwnd
 	void *mp = NULL;
 	PLAYER_STATE *player = NULL;
 
-	mp = PIMediaPlayer_create((void *)(strncmp(url, "pzsp://", 7) ? 0 : 1), NULL);
+	mp = PIMediaPlayer_create((void *)(uintptr_t)(strncmp(url, "pzsp://", 7) ? 0 : 1), NULL);
 	PIMediaPlayer_set_data_source(mp, NULL, url);
 	PIMediaPlayer_set_hwnd(mp, hwnd);
 	player = (PLAYER_STATE *)malloc(sizeof(PLAYER_STATE));
@@ -173,7 +193,7 @@ void player_create(TERMINAL *term, const char *name, const char *url, void *hwnd
 	player_set(term, player);
 }
 static void window_use(TERMINAL *term, PLAYER_STATE *player) {
-	char *new_prompt[80] = {0};
+	char new_prompt[80] = {0};
 	((USERDATA *)(term->userdata))->mode = MODE_PLAYER;
 	((USERDATA *)(term->userdata))->player_state = player;
 	((USERDATA *)(term->userdata))->prompts[0] = strdup(term->prompt); /* backup */
@@ -293,7 +313,11 @@ static int player_dispatch(TERMINAL *term) {
 		if (argument(term, "name", "Player name") & MATCH_ACT_FORWARD) {
 			name = cur->content;
 			cur = term_argpush(term);
-			if (argument(term, "url", "ex: pzsp://xxx or D:/media/revenge.mp4") & MATCH_ACT_FORWARD) {
+#if defined(_WIN32)
+			if (argument(term, "url", "ex: pzsp://xxx or D:/media/123.mp4") & MATCH_ACT_FORWARD) {
+#else
+			if (argument(term, "url", "ex: pzsp://xxx or ~/Media/123.mp4") & MATCH_ACT_FORWARD) {
+#endif
 				url = cur->content;
 				cur = term_argpush(term);
 				if (keyword(term, "NULL", "NULL", "Create player with hwnd NULL") & MATCH_ACT_EXEC) {
@@ -360,6 +384,7 @@ static int log_dispatch(TERMINAL *term, TERM_ARGS *cur) {
 	}
 	return -1;
 }
+#if defined(PIMEDIAPLAYER_OP_ID_ADD_VPFILTER)
 static void player_vpfilter_add(void *mp, int sid, const char *plugin_name, const char *setting) {
 	int64_t arg[3] = {0}, res = {0};
 	arg[0] = (int64_t)sid; /* sid */
@@ -371,9 +396,10 @@ static void player_vpfilter_add(void *mp, int sid, const char *plugin_name, cons
 static void player_vpfilter_remove(void *mp, int sid) {
 	int64_t arg[1] = {0}, res = {0};
 	arg[0] = (int64_t)sid; /* sid */
-	PIMediaPlayer_set_player_op(mp, NULL, PIMEDIAPLAYER_OP_ID_ADD_VPFILTER, 1, (void*)arg, 1, &res);
+	PIMediaPlayer_set_player_op(mp, NULL, PIMEDIAPLAYER_OP_ID_REMOVE_VPFILTER, 1, (void*)arg, 1, &res);
 	printf("remove vpfilter ret %" PRId64 "\n", res);
 }
+#endif
 static int player_plugin_dispatch(TERMINAL *term) {
 	void *mp = NULL;
 	int par_ret = 0;
@@ -385,6 +411,7 @@ static int player_plugin_dispatch(TERMINAL *term) {
 	}
 	if (keyword(term, "spfilter", "spfilter", NULL) & MATCH_ACT_FORWARD) {
 	}
+#if PIMEDIAPLAYER_OP_ID_ADD_VPFILTER
 	if (keyword(term, "vpfilter", "vpfilter", NULL) & MATCH_ACT_FORWARD) {
 		cur = term_argpush(term);
 		if (keyword(term, "add", "add", NULL) & MATCH_ACT_FORWARD) {
@@ -421,6 +448,7 @@ static int player_plugin_dispatch(TERMINAL *term) {
 		}
 		cur = term_argpop(term);
 	}
+#endif
 	return -1;
 }
 int console_event_dispatch(TERMINAL *term) {
@@ -462,17 +490,18 @@ int console_event_dispatch(TERMINAL *term) {
 			cur = term_argpush(term);
 			if (((par_ret = keyword(term, "i420", "i420", NULL)) & (MATCH_ACT_FORWARD | MATCH_ACT_EXEC)) \
 					|| ((par_ret = keyword(term, "nv12", "nv12", NULL)) & (MATCH_ACT_FORWARD | MATCH_ACT_EXEC)) \
+					|| ((par_ret = keyword(term, "bgr", "bgr", NULL)) & (MATCH_ACT_FORWARD | MATCH_ACT_EXEC)) \
 					|| ((par_ret = keyword(term, "argb", "argb", NULL)) & (MATCH_ACT_FORWARD | MATCH_ACT_EXEC)) \
 					|| ((par_ret = keyword(term, "rgb24", "rgb24", NULL)) & (MATCH_ACT_FORWARD | MATCH_ACT_EXEC))) {
 				fmt = cur->content;
 				if (par_ret & MATCH_ACT_EXEC) {
-					set_player_videocallback(term->userdata, fmt, 1/* savedata */, 0 /* with_ei */);
+					set_player_videocallback(term->userdata, fmt, 0/* savedata */, 0 /* with_ei */);
 					return 0;
 				}
 				if (par_ret & MATCH_ACT_FORWARD) {
 					cur = term_argpush(term);
 					if (keyword(term, "withei", "withei", "? With extrainfo") & MATCH_ACT_EXEC) {
-						set_player_videocallback(term->userdata, fmt, 1/* savedata */, 1 /* with_ei */);
+						set_player_videocallback(term->userdata, fmt, 0/* savedata */, 1 /* with_ei */);
 						return 0;
 					}
 					cur = term_argpop(term);
@@ -579,7 +608,25 @@ static unsigned WINAPI window_thread(void *mArgclist) {
 	return 0;
 }
 #endif
-
+static void free_player(void *_player) {
+	PLAYER_STATE *player = NULL;
+	player = (PLAYER_STATE *)_player;
+	if (player->name) {
+		free(player->name);
+	}
+	if (player->url) {
+		free(player->url);
+	}
+	free(player);
+}
+static void free_window(void *_windows) {
+	WINDOW_STATE *window = NULL;
+	window = (WINDOW_STATE *)_windows;
+	if (window->name) {
+		free(window->name);
+	}
+	free(window);
+}
 int main(int argc, char **argv) {
 	TERMINAL term;
 	USERDATA userdata = {0};
@@ -592,8 +639,8 @@ int main(int argc, char **argv) {
 	/* ResumeThread(h_win_thread); call resume if CREATE_SUSPENDED */
 	userdata.win_thread_id = win_thread_id;
 #endif
-	pi_list_init(&g_players, 0, NULL);
-	pi_list_init(&g_windows, 0, NULL);
+	pi_list_init(&g_players, 0, free_player);
+	pi_list_init(&g_windows, 0, free_window);
 	PIMediaPlayer_global_init("./logs");
 	// printf("PIMediaPlayer_global_init(\"./log\")\n"); 
 	term_init(&term, "PIMediaPlayer$", console_event_dispatch);
@@ -601,6 +648,8 @@ int main(int argc, char **argv) {
 	term_prompt_color_set(&term, TERM_FGCOLOR_BRIGHT_GREEN | TERM_STYLE_BOLD);
 	while (term_readline(&term) == 0);
 	term_free(&term);
+	pi_list_destroy(&g_windows);
+	pi_list_destroy(&g_players);
 #if defined(_WIN32)
 	PostThreadMessage(win_thread_id, MSG_END_PROCESS, NULL, NULL);
 	WaitForSingleObject(h_win_thread, INFINITE);
