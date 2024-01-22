@@ -393,20 +393,11 @@ int term_prompt_set(Terminal *term, const char *prompt) {
 		term->prompt = NULL;
 	}
 	if (prompt == NULL) {
-		term->prompt = (char *)MY_MALLOC(1);
-		if (term->prompt == NULL) {
-			goto func_end;
-		}
-		term->prompt[0] = '\0';
+		term->prompt = MY_STRDUP("");
 	} else {
-		term->prompt = (char *)MY_MALLOC(strlen(prompt) + 1);
-		if (term->prompt == NULL) {
-			goto func_end;
-		}
-		strcpy(term->prompt, prompt);
+		term->prompt = MY_STRDUP(prompt);
 	}
 	ret = 0;
-func_end:
 	return ret;
 }
 
@@ -416,6 +407,9 @@ void term_prompt_color_set(Terminal *term, unsigned int color) {
 
 void term_userdata_set(Terminal *term, void *userdata) {
 	term->userdata = userdata;
+}
+void *term_userdata_get(Terminal *term) {
+	return term->userdata;
 }
 
 static void term_print_prompt(Terminal *term) {
@@ -551,9 +545,12 @@ void term_free(Terminal *term) {
 	tt_buffer_free(&(term->line_command));
 	tt_buffer_free(&(term->tempbuf));
 	for (i = 0; i < term->history_cnt; i++) {
-		free(term->history[i]);
+		MY_FREE(term->history[i]);
 	}
-	free(term->history);
+	MY_FREE(term->history);
+	if (term->line != NULL) {
+		MY_FREE(term->line);
+	}
 	term->history_cnt = 0;
 	term->history = NULL;
 	term_free_args(term);
@@ -697,7 +694,7 @@ static void term_refresh(Terminal *term, int pos, int num, int chg_pos) {
 		pos_col = (chg_pos + prompt_len) % cols - (term->pos + prompt_len) % cols;
 		term_cursor_move(term, pos_col, pos_row);
 		if (term->mask) {
-			for (i = 0; i <  (int)strlen((char *)(term->line_command.content) + chg_pos); i++) {
+			for (i = 0; i < (int)strlen((char *)(term->line_command.content) + chg_pos); i++) {
 				term_printf(term, "*");
 			}
 			ret = i;
@@ -716,7 +713,7 @@ static void term_refresh(Terminal *term, int pos, int num, int chg_pos) {
 		pos_row = (pos + prompt_len) / cols - (chg_pos + prompt_len) / cols;
 		pos_col = (pos + prompt_len) % cols - (chg_pos + prompt_len) % cols;
 		term_cursor_move(term, pos_col, pos_row);
-	} else { /* move cursor */
+	} else { /* move cursor only */
 		pos_row = (pos + prompt_len) / cols - (term->pos + prompt_len) / cols;
 		pos_col = (pos + prompt_len) % cols - (term->pos + prompt_len) % cols;
 		term_cursor_move(term, pos_col, pos_row);
@@ -752,17 +749,15 @@ static void term_wordhelp_add(TermWordHelp **wordhelp, const char *word, const c
 	if (word == NULL) { /* word must not be NULL */
 		goto func_end;
 	}
-	p_new->word = (char *)MY_MALLOC(strlen(word) + 1);
+	p_new->word = MY_STRDUP(word);
 	if (p_new->word == NULL) {
 		goto func_end;
 	}
-	strcpy(p_new->word, word);
 	if (help != NULL) {
-		p_new->help = (char *)MY_MALLOC(strlen(help) + 1);
+		p_new->help = (char *)MY_STRDUP(help);
 		if (p_new->help == NULL) {
 			goto func_end;
 		}
-		strcpy(p_new->help, help);
 	}
 	if (*wordhelp == NULL) {
 		*wordhelp = p_new;
@@ -860,7 +855,7 @@ static void term_history_add(Terminal *term) {
 	if (term->history_cnt < HISTORY_LENGTH) {
 		term->history_cnt += 1;
 	} else {
-		free(term->history[0]);
+		MY_FREE(term->history[0]);
 		memmove(&term->history[0], &term->history[1], HISTORY_LENGTH - 1);
 	}
 	term->history[term->history_cnt - 1] = (char *)MY_MALLOC(len);
@@ -1157,7 +1152,6 @@ static void term_output_complete_or_help(Terminal *term) {
 			term_refresh(term, strlen((char *)(term->line_command.content)), strlen((char *)(term->line_command.content)), 0);
 		}
 	}
-
 }
 
 static void term_walk(Terminal *term) {
@@ -1188,6 +1182,91 @@ static void term_walk(Terminal *term) {
 
 void term_exit(Terminal *term) {
 	term->exit_flag = 1;
+}
+
+static const char *term_getline_inner(Terminal *term, const char *prefix, int mask) {
+	int key = 0;
+	char *old_prompt = NULL;
+	unsigned int old_color = 0;
+	old_prompt = MY_STRDUP(term->prompt);
+	old_color = term->prompt_color;
+	term_prompt_set(term, prefix);
+	term_prompt_color_set(term, TERM_COLOR_DEFAULT);
+	term->mask = mask;
+	term_print_prompt(term);
+	term_refresh(term, 0, 0, 0);
+	while (1) { /* loop once every key press */
+		key = term_getkey(term);
+		switch (key) {
+			/* move */
+			case KEY_LEFT:
+			case KEY_CTRL('B'):
+				if (term->pos > 0) {
+					term_refresh(term, term->pos - 1, term->num, -1);
+				}
+				break;
+			case KEY_RIGHT:
+			case KEY_CTRL('F'):
+				if (term->pos < (int)(term->line_command.used)) {
+					term_refresh(term, term->pos + 1, term->num, -1);
+				}
+				break;
+			/* edit */
+			case KEY_BACKSPACE: // Delete char to left of cursor
+				if (term->pos > 0) {
+					memmove(term->line_command.content + term->pos - 1, term->line_command.content + term->pos, term->line_command.used - term->pos + 1);
+					term_refresh(term, term->pos - 1, term->num - 1, term->pos - 1);
+				}
+				break;
+			case KEY_DELETE: // Delete character under cursor
+			case KEY_CTRL('D'):
+				if (term->pos < (int)(term->line_command.used)) {
+					memmove(term->line_command.content + term->pos, term->line_command.content + term->pos + 1, term->line_command.used - term->pos);
+					term->line_command.used -= 1;
+					term_refresh(term, term->pos, term->num - 1, term->pos);
+				}
+				break;
+			case KEY_CR:
+			case KEY_LF:
+				term_printf(term, "\n");
+				if (term->line != NULL) {
+					MY_FREE(term->line);
+				}
+				term->line = MY_STRDUP((char *)term->line_command.content);
+				goto func_end;
+			case KEY_CTRL('C'):
+				if (term->num > 0) {
+					term_printf(term, "^C\n");
+					tt_buffer_empty(&(term->prefix));
+					term_print_prompt(term);
+					term_refresh(term, 0, 0, 0);
+				} else {
+					term_printf(term, "\n");
+					if (term->line != NULL) {
+						MY_FREE(term->line);
+						term->line = NULL;
+					}
+					goto func_end;
+				}
+				break;
+			default:
+				if (key >= ' ' && key <= '~') { /* key value may be too large, must not use isprint(key) */
+					tt_buffer_swapto_malloced(&(term->line_command), 1);  /* malloc for complete SPACE */
+					memmove(term->line_command.content + term->pos + 1, term->line_command.content + term->pos, term->num - term->pos);
+					*(term->line_command.content + term->pos) = (char)key;
+					term_refresh(term, term->pos + 1, term->num + 1, term->pos);
+				} else {
+					// printf("unhandler key: %08x\n", key);
+				}
+				break;
+		} /* end of switch(key) */
+	}
+func_end:
+	term_prompt_set(term, old_prompt);
+	MY_FREE(old_prompt);
+	term_prompt_color_set(term, old_color);
+	term->mask = 0;
+	return term->line;
 }
 
 int term_loop(Terminal *term) {
@@ -1378,14 +1457,14 @@ static void node_free(TermNode *node) {
 		p_next = p_child->next;
 		node_free(p_child);
 	}
-	free(node->word);
+	MY_FREE(node->word);
 	if (node->help != NULL) {
-		free(node->help);
+		MY_FREE(node->help);
 	}
 	if (node->optval != NULL) {
-		free(node->optval);
+		MY_FREE(node->optval);
 	}
-	free(node);
+	MY_FREE(node);
 }
 
 void term_root_free(TermNode *root) {
@@ -1395,18 +1474,18 @@ void term_root_free(TermNode *root) {
 static TermNode *term_node_add(TermNode *parent, NodeType type, const char *word, const char *help, const char *optval, TermExec exec) {
 	TermNode *new_node = NULL, *tail = NULL;
 	new_node = MY_MALLOC(sizeof(TermNode));
-	if (new_node == NULL) {
+	if (new_node == NULL || word == NULL) {
 		goto func_end;
 	}
 	memset(new_node, 0x00, sizeof(TermNode));
 	new_node->type = type;
 	new_node->exec = exec;
-	new_node->word = strdup(word);
+	new_node->word = MY_STRDUP(word);
 	if (help != NULL) {
-		new_node->help = strdup(help);
+		new_node->help = MY_STRDUP(help);
 	}
 	if (optval != NULL && optval[0] != '\0') {
-		new_node->optval = strdup(optval);
+		new_node->optval = MY_STRDUP(optval);
 	}
 	if (parent->children == NULL) {
 		parent->children = new_node;
@@ -1426,3 +1505,9 @@ TermNode *term_node_argument_add(TermNode *parent, const char *word, const char 
 	return term_node_add(parent, E_NODETYPE_ARGUMENT, word, help, optval, exec);
 }
 
+const char *term_getline(Terminal *term, const char *prefix) {
+	return term_getline_inner(term, prefix, 0);
+}
+const char *term_password(Terminal *term, const char *prefix) {
+	return term_getline_inner(term, prefix, 1);
+}

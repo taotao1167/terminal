@@ -98,9 +98,6 @@ typedef struct TermArg {
 	struct TermArg *next;
 } TermArg;
 
-#ifndef USERTYPE 
-#define USERTYPE void
-#endif
 typedef struct Terminal {
     char *init_content;
     int init_content_offset;
@@ -114,11 +111,12 @@ typedef struct Terminal {
 	int history_cnt;
 	int history_cur; /* current histroy index */
 	char **history; /* histroy content */
+	char *line; /* term_getline or term_password will use */
 	int pos; /* cursor position */
 	int num; /* length of line_command */
 	int mask; /* set true if need mask */
 	int multiline; /* true if line command end with '\\' or found '\"' or '\'' but not close */
-	int exit_flag; /* set true when need exit term_readline */
+	int exit_flag; /* set true when need exit term_loop */
 	int spacetail; /* command has space tail or not */
 	TermEvent event;
 	TermArg *command_args;
@@ -129,24 +127,25 @@ typedef struct Terminal {
 	const char *exec_argv[MAX_EXEC_ARGC];
 	ssize_t (*read)(struct Terminal *term, void *buf, size_t count);
 	ssize_t (*write)(struct Terminal *term, const void *buf, size_t count);
-	USERTYPE *userdata; /* set by term_prompt_userdata_set */
+	void *userdata; /* set by term_prompt_userdata_set */
 } Terminal;
 
-TermNode *term_root_create();
-void term_root_free(TermNode *root);
-TermNode *term_node_keyword_add(TermNode *parent, const char *word, const char *help, const char *optval, TermExec exec);
-TermNode *term_node_argument_add(TermNode *parent, const char *word, const char *help, const char *optval, TermExec exec);
-int term_loop(Terminal *term);
 
+extern TermNode *term_root_create();
+extern TermNode *term_node_keyword_add(TermNode *parent, const char *word, const char *help, const char *optval, TermExec exec);
+extern TermNode *term_node_argument_add(TermNode *parent, const char *word, const char *help, const char *optval, TermExec exec);
+extern void term_root_free(TermNode *root);
 extern int term_init(Terminal *term, const char *prompt, TermNode *root, const char *init_content);
 extern void term_exit(Terminal *term);
 extern void term_free(Terminal *term);
+extern int term_loop(Terminal *term);
 extern void term_color_set(Terminal *term, unsigned int color);
 extern int term_prompt_set(Terminal *term, const char *prompt);
 extern void term_prompt_color_set(Terminal *term, unsigned int color);
-extern void term_userdata_set(Terminal *term, USERTYPE *userdata);
-extern void term_event_bind(Terminal *term, int (*cb)(Terminal *term));
-extern int term_readline(Terminal *term);
+extern void term_userdata_set(Terminal *term, void *userdata);
+extern void *term_userdata_get(Terminal *term);
+extern const char *term_getline(Terminal *term, const char *prefix);
+extern const char *term_password(Terminal *term, const char *prefix);
 
 #ifdef __cplusplus
 }
