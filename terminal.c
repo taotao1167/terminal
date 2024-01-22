@@ -28,16 +28,10 @@
 #include "terminal.h"
 #endif /* end of #ifndef __TERMINAL_H__ */
 
-#ifdef WATCH_RAM
-#include "tt_malloc_debug.h"
-#define MY_MALLOC(x) my_malloc((x), __FILE__, __LINE__)
-#define MY_FREE(x) my_free((x), __FILE__, __LINE__)
-#define MY_REALLOC(x, y) my_realloc((x), (y), __FILE__, __LINE__)
-#else
 #define MY_MALLOC(x) malloc((x))
 #define MY_FREE(x) free((x))
 #define MY_REALLOC(x, y) realloc((x), (y))
-#endif
+#define MY_STRDUP(x) strdup((x))
 
 #define CTRL_FLAG (0x01000000)
 #define ALT_FLAG (0x02000000)
@@ -60,7 +54,7 @@
 #define KEY_INSERT (0x18 << 8)
 #define KEY_DELETE (0x19 << 8)
 
-int isdelimiter(char ch) {
+static int isdelimiter(char ch) {
 	int i = 0;
 	const char *target = " !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
 
@@ -72,18 +66,18 @@ int isdelimiter(char ch) {
 	return 0;
 }
 
-int term_vprintf(TERMINAL *term, const char *format, va_list args) {
+static int term_vprintf(Terminal *term, const char *format, va_list args) {
 	int ret = -1;
 
 	if ((ret = tt_buffer_vprintf(&(term->tempbuf), format, args)) < 0) {
 		ret = -1;
-		goto exit;
+		goto func_end;
 	}
-exit:
+func_end:
 	return ret;
 }
 
-int term_printf(TERMINAL *term, const char *format, ...) {
+static int term_printf(Terminal *term, const char *format, ...) {
 	int rc;
 	va_list args;
 
@@ -91,7 +85,7 @@ int term_printf(TERMINAL *term, const char *format, ...) {
 	rc = term_vprintf(term, format, args);
 	va_end(args);
 	/* TODO should split line by line and output as paging */
-	term->write(term->tempbuf.content, term->tempbuf.used);
+	term->write(term, term->tempbuf.content, term->tempbuf.used);
 	term->tempbuf.used = 0;
 #if 0
 	for (line_tail = line_head = term->tempbuf.content; ;) {
@@ -106,22 +100,23 @@ int term_printf(TERMINAL *term, const char *format, ...) {
 	return rc;
 }
 
-int term_command_write(TERMINAL *term, const void *content, size_t count) {
+static int term_command_write(Terminal *term, const void *content, size_t count) {
 	return tt_buffer_write(&(term->line_command), content, count);
 }
 
-int term_command_vprintf(TERMINAL *term, const char *format, va_list args) {
+#if 0 /* useless now */
+static int term_command_vprintf(Terminal *term, const char *format, va_list args) {
 	int ret = -1;
 
 	if (0 != tt_buffer_vprintf(&(term->line_command), format, args)) {
-		goto exit;
+		goto func_end;
 	}
 	ret = 0;
-exit:
+func_end:
 	return ret;
 }
 
-int term_command_printf(TERMINAL *term, const char *format, ...) {
+static int term_command_printf(Terminal *term, const char *format, ...) {
 	int rc;
 	va_list args;
 	va_start(args, format);
@@ -129,9 +124,10 @@ int term_command_printf(TERMINAL *term, const char *format, ...) {
 	va_end(args);
 	return rc;
 }
+#endif
 
-void term_free_args(TERMINAL *term) {
-	TERM_ARGS *p_cur = NULL, *p_next = NULL;
+static void term_free_args(Terminal *term) {
+	TermArg *p_cur = NULL, *p_next = NULL;
 
 	for (p_cur = term->command_args; p_cur != NULL; p_cur = p_next) {
 		p_next = p_cur->next;
@@ -143,12 +139,11 @@ void term_free_args(TERMINAL *term) {
 	term->command_args = NULL;
 }
 
-extern int term_readline(TERMINAL *term);
-/* term_split_args return 1 if need continue read content */
-int term_split_args(TERMINAL *term) {
+/* term_split_args return < 0 if need continue read content, for case multiline or quot */
+static int term_split_args(Terminal *term) {
 	int ret = 0;
 	const char *start = NULL, *end = NULL;
-	TERM_ARGS *p_new = NULL, *p_tail = NULL;
+	TermArg *p_new = NULL, *p_tail = NULL;
 	TT_BUFFER command_buf, arg_buf;
 	char in_quot = '\0';
 	int backslash_tail = 0, eof = 0;
@@ -171,48 +166,55 @@ int term_split_args(TERMINAL *term) {
 
 	while (1) { /* parse all content */
 		if (in_quot == '\0') {
-			for (; *start == ' '; start++); /* move start for skip SPACE at linehead */
+			for (; *start == ' '; start++); /* move to first word for lstrip */
 		}
-		for (end = start; ; end++) { /* parse one argumeng */
+		for (end = start; ; end++) { /* parse one argument */
 			if ((*end == '"' || *end == '\'') && (end == start || *(end - 1) != '\\')) { /* found '"' or '\'' and no escape(\) */
-				if (in_quot == '\0') { /* found quot */
+				if (in_quot == '\0') { /* is quot start */
 					in_quot = *end;
-				} else if (*end == in_quot) { /* end quot */
+					continue;
+				} else if (*end == in_quot) { /* is quot end */
 					in_quot = '\0';
+					continue;
 				}
-				continue;
 			}
-			if (*end == '\\' && *(end + 1) == '\0') { /* found '\\' at end of content */
-				backslash_tail = 1;
-				start = end + 1;
-				eof = 1;
-				break;
+			if (*end == '\\') {
+				if (*(end + 1) == '\0') { /* found '\\' at end of content, is multiline */
+					backslash_tail = 1;
+					start = end + 1;
+					eof = 1;
+					break;
+				} else if (*(end + 1) == 'n') { /* escape '\n' */
+					end++;
+					tt_buffer_write(&arg_buf, "\n", 1);
+					continue;
+				} else if (*(end + 1) == ' ' || *(end + 1) == '\\' || *(end + 1) == '\'' || *(end + 1) == '"') { /* escape SPACE, BACKSPLASH and QUOT */
+					end++;
+					tt_buffer_write(&arg_buf, end, 1);
+					continue;
+				}
 			}
-			if (in_quot == '\0') {
+			if (in_quot == '\0') { /* not between quot */
 				if (*end != ' ' && *end != '\0') {
 					tt_buffer_write(&arg_buf, end, 1);
 					continue;
 				}
 				if (arg_buf.used > 0) {
-					p_new = (TERM_ARGS *)MY_MALLOC(sizeof(TERM_ARGS));
+					p_new = (TermArg *)MY_MALLOC(sizeof(TermArg));
 					if (p_new == NULL) {
-						goto exit;
+						goto func_end;
 					}
-					memset(p_new, 0x00, sizeof(TERM_ARGS));
-					p_new->content = (char *)MY_MALLOC(arg_buf.used + 1);
+					memset(p_new, 0x00, sizeof(TermArg));
+					p_new->content = (char *)MY_STRDUP((char *)arg_buf.content);
 					if (p_new->content == NULL) {
-						goto exit;
+						goto func_end;
 					}
-					memcpy(p_new->content, arg_buf.content, arg_buf.used);
-					*(p_new->content + arg_buf.used) = '\0';
 					tt_buffer_empty(&arg_buf);
-					p_new->endword = (*end == '\0');
+					term->spacetail = !(*end == '\0');
 					if (term->command_args == NULL) {
 						term->command_args = p_new;
 					} else {
-						p_new->prev = p_tail;
 						p_tail->next = p_new; /* it's impossible that p_tail is NULL because term->command_args must be NULL at first loop */
-						p_tail->endword = 0;
 					}
 					p_tail = p_new;
 					p_new = NULL;
@@ -231,26 +233,26 @@ int term_split_args(TERMINAL *term) {
 				tt_buffer_write(&arg_buf, end, 1);
 			}
 		}  /* end of parse one argumeng */
-
-
 		if (eof) { /* end of line */
 			break;
 		}
 	}
-	if (in_quot || backslash_tail) {
-		/* save current line content to prefix and return 1 to continue read */
-		if (backslash_tail) { /* skip '\\' */
-			tt_buffer_write(&(term->prefix), term->line_command.content, term->line_command.used - 1);
-		} else {
-			tt_buffer_write(&(term->prefix), term->line_command.content, term->line_command.used);
+	if (term->event != E_EVENT_COMPLETE) {
+		if (in_quot || backslash_tail) {
+			/* save current line content to prefix and return 1 to continue read */
+			if (backslash_tail) { /* skip '\\' */
+				tt_buffer_write(&(term->prefix), term->line_command.content, term->line_command.used - 1);
+			} else {
+				tt_buffer_write(&(term->prefix), term->line_command.content, term->line_command.used);
+			}
+			if (in_quot) {
+				tt_buffer_write(&(term->prefix), "\n", 1);
+			}
+			ret = -1; /* return -1 means continue */
 		}
-		if (in_quot) {
-			tt_buffer_write(&(term->prefix), "\n", 1);
-		}
-		ret = 1; /* return 1 means continue */
+		term->multiline = ret;
 	}
-	term->multiline = ret;
-exit:
+func_end:
 	tt_buffer_free(&arg_buf);
 	tt_buffer_free(&command_buf);
 	if (p_new != NULL) {
@@ -262,36 +264,25 @@ exit:
 	return ret;
 }
 
-int term_getch(TERMINAL *term) {
+static int term_getch(Terminal *term) {
+	int ret = 0;
 	char key = 0;
-#if defined(_WIN32)
-	fflush (stdout);
-	key = _getch();
-#else
-	struct termios old_term, cur_term;
-
-	if (tcgetattr(STDIN_FILENO, &old_term) < 0) {
-		perror("tcsetattr");
-	}
-	cur_term = old_term;
-	cur_term.c_lflag &= ~(ICANON | ECHO | ISIG); // echoing off, canonical off, no signal chars
-	cur_term.c_cc[VMIN] = 1;
-	cur_term.c_cc[VTIME] = 0;
-	if (tcsetattr(STDIN_FILENO, TCSANOW, &cur_term) < 0) {
-		perror("tcsetattr");
-	}
-	if (term->read(&key, 1) < 0) {
-		perror("term->read()");
-	}
-	if (tcsetattr(STDIN_FILENO, TCSADRAIN, &old_term) < 0) {
-		perror("tcsetattr");
+	while (1) {
+		ret = term->read(term, &key, 1);
+		if (ret < 0) {
+			perror("term->read()");
+			break;
+		}
+		if (ret == 0) {
+			continue;
+		}
+		break;
 	}
 	// printf("%3d 0x%02x (%c)\n", key, key, isprint(key) ? key : ' ');
-#endif
 	return key;
 }
 
-void term_screen_get(TERMINAL *term, int *cols, int *rows) {
+static void term_screen_get(Terminal *term, int *cols, int *rows) {
 #if defined(_WIN32)
 	CONSOLE_SCREEN_BUFFER_INFO inf;
 	GetConsoleScreenBufferInfo (GetStdHandle(STD_OUTPUT_HANDLE), &inf);
@@ -308,7 +299,7 @@ void term_screen_get(TERMINAL *term, int *cols, int *rows) {
 	*rows = *rows > 1 ? *rows : 24;
 }
 
-void term_cursor_move(TERMINAL *term, int col_off, int row_off) {
+static void term_cursor_move(Terminal *term, int col_off, int row_off) {
 #if defined(_WIN32)
 	CONSOLE_SCREEN_BUFFER_INFO inf;
 	GetConsoleScreenBufferInfo (GetStdHandle(STD_OUTPUT_HANDLE), &inf);
@@ -329,7 +320,7 @@ void term_cursor_move(TERMINAL *term, int col_off, int row_off) {
 #endif
 }
 
-void term_color_set(TERMINAL *term, unsigned int color) {
+void term_color_set(Terminal *term, unsigned int color) {
 #if defined(_WIN32)
 	CONSOLE_SCREEN_BUFFER_INFO info;
 	static WORD dft_wAttributes = 0;
@@ -343,9 +334,9 @@ void term_color_set(TERMINAL *term, unsigned int color) {
 	} else {
 		wAttributes |= (color >= TERM_FGCOLOR_BRIGHT_BLACK) ? FOREGROUND_INTENSITY : 0;
 		switch (color & 0xff) {
-			case TERM_FGCOLOR_BRIGHT_RED:  	wAttributes |= FOREGROUND_RED;	break;
-			case TERM_FGCOLOR_BRIGHT_GREEN:  	wAttributes |= FOREGROUND_GREEN;break;
-			case TERM_FGCOLOR_BRIGHT_BLUE:  	wAttributes |= FOREGROUND_BLUE;	break;
+			case TERM_FGCOLOR_BRIGHT_RED:	wAttributes |= FOREGROUND_RED;	break;
+			case TERM_FGCOLOR_BRIGHT_GREEN:		wAttributes |= FOREGROUND_GREEN;break;
+			case TERM_FGCOLOR_BRIGHT_BLUE:		wAttributes |= FOREGROUND_BLUE;	break;
 			case TERM_FGCOLOR_BRIGHT_YELLOW:  wAttributes |= FOREGROUND_RED | FOREGROUND_GREEN;	break;
 			case TERM_FGCOLOR_BRIGHT_MAGENTA: wAttributes |= FOREGROUND_RED | FOREGROUND_BLUE;	break;
 			case TERM_FGCOLOR_BRIGHT_CYAN:	wAttributes |= FOREGROUND_GREEN | FOREGROUND_BLUE;	break;
@@ -357,9 +348,9 @@ void term_color_set(TERMINAL *term, unsigned int color) {
 	} else {
 		wAttributes |= (color >= TERM_BGCOLOR_BRIGHT_BLACK) ? BACKGROUND_INTENSITY : 0;
 		switch ((color & 0xff00)) {
-			case TERM_BGCOLOR_BRIGHT_RED:  	wAttributes |= BACKGROUND_RED;	break;
-			case TERM_BGCOLOR_BRIGHT_GREEN:  	wAttributes |= BACKGROUND_GREEN;break;
-			case TERM_BGCOLOR_BRIGHT_BLUE:  	wAttributes |= BACKGROUND_BLUE;	break;
+			case TERM_BGCOLOR_BRIGHT_RED:	wAttributes |= BACKGROUND_RED;	break;
+			case TERM_BGCOLOR_BRIGHT_GREEN:		wAttributes |= BACKGROUND_GREEN;break;
+			case TERM_BGCOLOR_BRIGHT_BLUE:		wAttributes |= BACKGROUND_BLUE;	break;
 			case TERM_BGCOLOR_BRIGHT_YELLOW:  wAttributes |= BACKGROUND_RED | BACKGROUND_GREEN;	break;
 			case TERM_BGCOLOR_BRIGHT_MAGENTA: wAttributes |= BACKGROUND_RED | BACKGROUND_BLUE;	break;
 			case TERM_BGCOLOR_BRIGHT_CYAN:	wAttributes |= BACKGROUND_GREEN | BACKGROUND_BLUE;	break;
@@ -392,8 +383,11 @@ void term_color_set(TERMINAL *term, unsigned int color) {
 #endif
 }
 
-int term_prompt_set(TERMINAL *term, const char *prompt) {
+int term_prompt_set(Terminal *term, const char *prompt) {
 	int ret = -1;
+	if (prompt == NULL) {
+		prompt = term->default_prompt;
+	}
 	if (term->prompt != NULL) {
 		MY_FREE(term->prompt);
 		term->prompt = NULL;
@@ -401,30 +395,30 @@ int term_prompt_set(TERMINAL *term, const char *prompt) {
 	if (prompt == NULL) {
 		term->prompt = (char *)MY_MALLOC(1);
 		if (term->prompt == NULL) {
-			goto exit;
+			goto func_end;
 		}
 		term->prompt[0] = '\0';
 	} else {
 		term->prompt = (char *)MY_MALLOC(strlen(prompt) + 1);
 		if (term->prompt == NULL) {
-			goto exit;
+			goto func_end;
 		}
 		strcpy(term->prompt, prompt);
 	}
 	ret = 0;
-exit:
+func_end:
 	return ret;
 }
 
-void term_prompt_color_set(TERMINAL *term, unsigned int color) {
+void term_prompt_color_set(Terminal *term, unsigned int color) {
 	term->prompt_color = color;
 }
 
-void term_prompt_userdata_set(TERMINAL *term, void *userdata) {
+void term_userdata_set(Terminal *term, void *userdata) {
 	term->userdata = userdata;
 }
 
-void term_print_prompt(TERMINAL *term) {
+static void term_print_prompt(Terminal *term) {
 	if (!term->multiline) {
 		term_color_set(term, term->prompt_color);
 		term_printf(term, term->prompt);
@@ -436,15 +430,59 @@ void term_print_prompt(TERMINAL *term) {
 	term->pos = 0;
 }
 
-ssize_t read_std(void *buf, size_t count) {
-	return read(STDIN_FILENO, buf, count);
+static ssize_t read_std(Terminal *term, void *buf, size_t count) {
+	ssize_t ret = 0;
+
+#if defined(_WIN32)
+	fflush(stdout);
+	*(char *)buf = _getch();
+	ret = 1;
+#else
+	struct termios old_term, cur_term;
+	if (tcgetattr(STDIN_FILENO, &old_term) < 0) {
+		perror("tcsetattr");
+	}
+	cur_term = old_term;
+	cur_term.c_lflag &= ~(ICANON | ECHO | ISIG); // echoing off, canonical off, no signal chars
+	cur_term.c_cc[VMIN] = 1;
+	cur_term.c_cc[VTIME] = 0;
+	if (tcsetattr(STDIN_FILENO, TCSANOW, &cur_term) < 0) {
+		perror("tcsetattr");
+	}
+	ret = read(STDIN_FILENO, buf, count);
+	if (tcsetattr(STDIN_FILENO, TCSADRAIN, &old_term) < 0) {
+		perror("tcsetattr");
+	}
+#endif
+	return ret;
 }
 
-ssize_t write_std(const void *buf, size_t count) {
+static ssize_t read_init_content(Terminal *term, void *buf, size_t count) {
+	ssize_t ret = 0;
+	if (term->init_content == NULL) {
+		term->read = read_std;
+		ret = 0;
+	} else {
+		*(char *)buf = *(term->init_content + term->init_content_offset);
+		if (*(char *)buf == '\0') {
+			MY_FREE(term->init_content);
+			term->init_content = NULL;
+			term->init_content_offset = 0;
+			term->read = read_std;
+			ret = 0;
+		} else {
+			term->init_content_offset++;
+			ret = 1;
+		}
+	}
+	return ret;
+}
+
+static ssize_t write_std(Terminal *term, const void *buf, size_t count) {
 	return write(STDOUT_FILENO, buf, count);
 }
 
-int term_init(TERMINAL *term, const char *prompt, int (*cb)(TERMINAL *term)) {
+int term_init(Terminal *term, const char *prompt, TermNode *root, const char *init_content) {
 	int not_support = 0;
 	char *term_env = NULL;
 
@@ -463,40 +501,31 @@ int term_init(TERMINAL *term, const char *prompt, int (*cb)(TERMINAL *term)) {
 		return -1;
 	}
 
-	memset(term, 0x00, sizeof(TERMINAL));
+	memset(term, 0x00, sizeof(Terminal));
 	tt_buffer_init(&(term->line_command));
 	tt_buffer_swapto_malloced(&(term->line_command), 0); /* avoid term->line_command->content is null */
 	tt_buffer_init(&(term->tempbuf));
 	tt_buffer_init(&(term->prefix));
 	tt_buffer_swapto_malloced(&(term->prefix), 0); /* avoid term->frefix->content is null */
+	term->default_prompt = MY_STRDUP(prompt);
 	if (0 != term_prompt_set(term, prompt)) {
 		return -1;
 	}
-	term->read = read_std;
+	if (init_content != NULL) {
+		term->init_content = MY_STRDUP(init_content);
+		term->init_content_offset = 0;
+		term->read = read_init_content;
+	} else {
+		term->read = read_std;
+	}
 	term->write = write_std;
-	term->event_cb = cb;
+	term->root = root;
+	term_prompt_color_set(term, TERM_FGCOLOR_BRIGHT_GREEN | TERM_STYLE_BOLD);
 	return 0;
 }
 
-void term_event_bind(TERMINAL *term, int (*cb)(TERMINAL *term)) {
-	term->event_cb = cb;
-}
-
-void history_free(struct ST_TERM_STRINGS **p_head) {
-	struct ST_TERM_STRINGS *p_cur = NULL, *p_prev = NULL;
-
-	for (p_cur = (*p_head); p_cur != NULL; p_cur = p_prev) {
-		p_prev = p_cur->prev;
-		if (p_cur->content != NULL) {
-			MY_FREE(p_cur->content);
-		}
-		MY_FREE(p_cur);
-	}
-	*p_head = NULL;
-}
-
-void wordhelp_free(struct ST_TERM_WORDHELP **p_head) {
-	struct ST_TERM_WORDHELP *p_cur = NULL, *p_next = NULL;
+static void wordhelp_free(struct TermWordHelp **p_head) {
+	TermWordHelp *p_cur = NULL, *p_next = NULL;
 
 	for (p_cur = (*p_head); p_cur != NULL; p_cur = p_next) {
 		p_next = p_cur->next;
@@ -510,21 +539,30 @@ void wordhelp_free(struct ST_TERM_WORDHELP **p_head) {
 	}
 }
 
-void term_free(TERMINAL *term) {
+void term_free(Terminal *term) {
+	int i = 0;
 	if (term->prompt != NULL) {
 		MY_FREE(term->prompt);
+	}
+	if (term->default_prompt != NULL) {
+		MY_FREE(term->default_prompt);
 	}
 	tt_buffer_free(&(term->prefix));
 	tt_buffer_free(&(term->line_command));
 	tt_buffer_free(&(term->tempbuf));
-	history_free(&(term->history));
+	for (i = 0; i < term->history_cnt; i++) {
+		free(term->history[i]);
+	}
+	free(term->history);
+	term->history_cnt = 0;
+	term->history = NULL;
 	term_free_args(term);
 	wordhelp_free(&(term->complete));
 	wordhelp_free(&(term->hints));
-	memset(term, 0x00, sizeof(TERMINAL));
+	memset(term, 0x00, sizeof(Terminal));
 }
 
-int term_getkey(TERMINAL *term) {
+static int term_getkey(Terminal *term) {
 	int num1 = 0, num2 = 0;
 	int key = 0;
 
@@ -646,7 +684,7 @@ int term_getkey(TERMINAL *term) {
 	return key;
 }
 
-void term_refresh(TERMINAL *term, int pos, int num, int chg_pos) {
+static void term_refresh(Terminal *term, int pos, int num, int chg_pos) {
 	int i = 0, ret = 0, prompt_len = 0, pos_row = 0, pos_col = 0;;
 	int rows = 0, cols = 0;
 
@@ -688,8 +726,8 @@ void term_refresh(TERMINAL *term, int pos, int num, int chg_pos) {
 	term->line_command.used = num;
 }
 
-void term_wordhelp_free(struct ST_TERM_WORDHELP **wordhelp) {
-	struct ST_TERM_WORDHELP *p_next = NULL, *p_cur = NULL;
+static void term_wordhelp_free(TermWordHelp **wordhelp) {
+	TermWordHelp *p_next = NULL, *p_cur = NULL;
 
 	for (p_cur = *wordhelp; p_cur != NULL; p_cur = p_next) {
 		p_next = p_cur->next;
@@ -702,27 +740,27 @@ void term_wordhelp_free(struct ST_TERM_WORDHELP **wordhelp) {
 	*wordhelp = NULL;
 }
 
-void term_wordhelp_add(struct ST_TERM_WORDHELP **wordhelp, const char *word, const char *help) {
+static void term_wordhelp_add(TermWordHelp **wordhelp, const char *word, const char *help) {
 	int ret = -1;
-	struct ST_TERM_WORDHELP *p_new = NULL, *p_cur = NULL;
+	TermWordHelp *p_new = NULL, *p_cur = NULL;
 
-	p_new = (struct ST_TERM_WORDHELP *)MY_MALLOC(sizeof(struct ST_TERM_WORDHELP));
+	p_new = (TermWordHelp *)MY_MALLOC(sizeof(TermWordHelp));
 	if (p_new == NULL) {
-		goto exit;
+		goto func_end;
 	}
-	memset(p_new, 0x00, sizeof(struct ST_TERM_WORDHELP));
+	memset(p_new, 0x00, sizeof(TermWordHelp));
 	if (word == NULL) { /* word must not be NULL */
-		goto exit;
+		goto func_end;
 	}
 	p_new->word = (char *)MY_MALLOC(strlen(word) + 1);
 	if (p_new->word == NULL) {
-		goto exit;
+		goto func_end;
 	}
 	strcpy(p_new->word, word);
 	if (help != NULL) {
 		p_new->help = (char *)MY_MALLOC(strlen(help) + 1);
 		if (p_new->help == NULL) {
-			goto exit;
+			goto func_end;
 		}
 		strcpy(p_new->help, help);
 	}
@@ -733,7 +771,7 @@ void term_wordhelp_add(struct ST_TERM_WORDHELP **wordhelp, const char *word, con
 		p_cur->next = p_new;
 	}
 	ret = 0;
-exit:
+func_end:
 	if (ret != 0) {
 		if (p_new != NULL) {
 			if (p_new->word != NULL) {
@@ -748,110 +786,229 @@ exit:
 	return;
 }
 
-void term_complete_free(TERMINAL *term) {
+static void term_complete_free(Terminal *term) {
 	term_wordhelp_free(&(term->complete));
 }
 
-void term_complete_add(TERMINAL *term, TERM_ARGS *p_arg, const char *word, const char *help) {
+static void term_complete_add(Terminal *term, const char *word, const char *help) {
 	term_wordhelp_add(&(term->complete), word, help);
 }
 
-void term_hints_free(TERMINAL *term) {
+static void term_hints_free(Terminal *term) {
 	term_wordhelp_free(&(term->hints));
 }
 
-void term_hints_add(TERMINAL *term, TERM_ARGS *p_arg, const char *word, const char *help) {
-	if (p_arg == NULL || p_arg->endword) {
-		term_wordhelp_add(&(term->hints), word, help);
-	}
+static void term_hints_add(Terminal *term, const char *word, const char *help) {
+	term_wordhelp_add(&(term->hints), word, help);
 }
 
-/* TODO for argument around by '"' or '\'' */
-void term_history_add(TERMINAL *term) {
-	int ret = -1, i = 0;
-	size_t len = 0;
-	TERM_ARGS *p_arg = NULL;
-	TERM_HISTORY *p_new = NULL, *p_his = NULL, *p_prev = NULL;
+static int strlenwithesc(const char *s) {
+	int ret = 0;
+	const char *cur = NULL;
+	for (cur = s; *cur != '\0'; cur++) {
+		if (*cur == '\n' || *cur == ' ' || *cur == '\\' || *cur == '\'' || *cur == '\"') {
+			ret += 2;
+		} else {
+			ret += 1;
+		}
+	}
+	return ret;
+}
 
+static char *strcatwithesc(char *dest, const char *src) {
+	char *dst_cur = NULL;
+	const char *src_cur = NULL;
+	for (dst_cur = dest; *dst_cur != '\0'; dst_cur++);
+	for (src_cur = src; *src_cur != '\0'; src_cur++) {
+		if (*src_cur == '\n') {
+			*dst_cur = '\\';
+			dst_cur++;
+			*dst_cur = 'n';
+			dst_cur++;
+		} else if(*src_cur == ' ' || *src_cur == '\\' || *src_cur == '\'' || *src_cur == '\"') {
+			*dst_cur = '\\';
+			dst_cur++;
+			*dst_cur = *src_cur;
+			dst_cur++;
+		} else {
+			*dst_cur = *src_cur;
+			dst_cur++;
+		}
+	}
+	*dst_cur = '\0';
+	return dest;
+}
+
+static void term_history_add(Terminal *term) {
+	size_t len = 0;
+	TermArg *p_arg = NULL;
+
+	if (term->history == NULL) {
+		term->history = (char **)MY_MALLOC(sizeof(char *) * HISTORY_LENGTH);
+		if (term->history == NULL) {
+			goto func_end;
+		}
+		memset(term->history, 0x00, sizeof(char *) * HISTORY_LENGTH);
+	}
 	if (term->command_args == NULL) {
-		goto exit;
+		goto func_end;
 	}
 	len = 0;
 	for (p_arg = term->command_args; p_arg != NULL; p_arg = p_arg->next) {
-		len += strlen(p_arg->content) + 1;
+		len += strlenwithesc(p_arg->content) + 1;
 	}
-	p_new = (TERM_HISTORY *)MY_MALLOC(sizeof(TERM_HISTORY));
-	if (p_new == NULL) {
-		goto exit;
+	if (term->history_cnt < HISTORY_LENGTH) {
+		term->history_cnt += 1;
+	} else {
+		free(term->history[0]);
+		memmove(&term->history[0], &term->history[1], HISTORY_LENGTH - 1);
 	}
-	memset(p_new, 0x00, sizeof(TERM_HISTORY));
-	p_new->content = (char *)MY_MALLOC(len);
-	if (p_new->content == NULL) {
-		goto exit;
+	term->history[term->history_cnt - 1] = (char *)MY_MALLOC(len);
+	if (term->history[term->history_cnt - 1] == NULL) {
+		goto func_end;
 	}
-	*(p_new->content) = '\0';
+	term->history[term->history_cnt - 1][0] = '\0';
 	for (p_arg = term->command_args; p_arg != NULL; p_arg = p_arg->next) {
-		if (*(p_new->content) != '\0') {
-			strcat(p_new->content, " ");
+		if (term->history[term->history_cnt - 1][0] != '\0') {
+			strcat(term->history[term->history_cnt - 1], " ");
 		}
-		strcat(p_new->content, p_arg->content);
+		strcatwithesc(term->history[term->history_cnt - 1], p_arg->content);
 	}
-	if (term->history != NULL) {
-		term->history->next = p_new;
-	}
-	p_new->prev = term->history;
-	term->history = p_new;
-	if (HISTORY_LENGTH) {
-		for (i = 0, p_his = term->history; p_his != NULL; p_his = p_his->prev) { /* move to head */
-			i++;
-			if (i > HISTORY_LENGTH) {
-				p_his->next->prev = NULL;
-				break;
-			}
-		}
-		for (; p_his != NULL; p_his = p_prev) {
-			p_prev = p_his->prev;
-			if (p_his->content != NULL) {
-				MY_FREE(p_his->content);
-			}
-			MY_FREE(p_his);
-		}
-	}
-	ret = 0;
-exit:
-	if (ret != 0) {
-		if (p_new != NULL) {
-			if (p_new->content != NULL) {
-				MY_FREE(p_new->content);
-			}
-			MY_FREE(p_new);
-		}
-	}
+func_end:
 	return;
 }
 
-void term_completion(TERMINAL *term) {
-	int comman_len = 0, overlay = 0, start_pos = 0, end_pos = 0, has_change = 0;
-	int i = 0, word_width = 0, with_help = 0, rows = 0, cols = 0, words_len = 0, word_num = 0;
-	TERM_COMPLETE *p_cur = NULL;
-	TERM_ARGS *p_lastarg = NULL;
-
-	if (term->event_cb == NULL) {
-		return;
+static void term_exec_run(Terminal *term, TermExec exec) {
+	if (term->event == E_EVENT_EXEC) {
+		exec(term, term->exec_argc, term->exec_argv);
+		term->exec_num++;
 	}
-	term_split_args(term);
-	/* find completion and help info */
-	term->arg_prev = term->arg_cur = NULL;
-	term->arg_next = term->command_args;
-	term->event = E_EVENT_COMPLETE;
-	term->event_cb(term);
-	term->event = E_EVENT_NONE;
+}
+
+static int term_push_exec_argv(Terminal *term, const char *argv) {
+	int ret  = -1;
+	if (term->exec_argc + 1 >= MAX_EXEC_ARGC) {
+		goto func_end;
+	}
+	term->exec_argv[term->exec_argc] = argv;
+	term->exec_argc++;
+func_end:
+	return ret;
+}
+
+static int term_pop_exec_argv(Terminal *term) {
+	int ret  = -1;
+	if (term->exec_argc == 0) {
+		goto func_end;
+	}
+	term->exec_argc--;
+	term->exec_argv[term->exec_argc] = NULL;
+func_end:
+	return ret;
+}
+
+static int compare_keyword(const char *target, const char *content) {
+	if (target == NULL || content == NULL) {
+		return MATCH_ALL;
+	}
+	if (0 == strcasecmp(content, target)) {
+		return MATCH_ALL;
+	}
+	if (0 == strncasecmp(content, target, strlen(content))) {
+		return MATCH_PART;
+	}
+	return MATCH_NONE;
+}
+
+static void walk_node(Terminal *term, TermNode *node, TermArg *arg) { /* will recurise */
+	int match = 0;
+	TermNode *p_child = NULL;
+	
+	if (node->word == NULL) { /* is root */
+		// printf("work_node: root, input %s\n", arg ? arg->content : "null");
+		if (node->children != NULL) {
+			for (p_child = node->children; p_child != NULL; p_child = p_child->next) {
+				walk_node(term, p_child, arg);
+			}
+		}
+	} else {
+		// printf("work_node: %s, input %s\n", node->word, arg ? arg->content : "null");
+		if (node->type == E_NODETYPE_KEYWORD) {
+			if (arg == NULL) {
+				match = MATCH_ALL;
+				term_complete_add(term, node->word, node->help);
+				if (node->optval != NULL && node->exec != NULL) {
+					term_push_exec_argv(term, node->optval);
+					term_exec_run(term, node->exec);
+					term_pop_exec_argv(term);
+				}
+			} else {
+				match = compare_keyword(node->word, arg->content);
+				if (match != MATCH_NONE) {
+					if (arg->next == NULL) {
+						if (!term->spacetail) { /* need complete or print hellp */
+							term_complete_add(term, node->word, node->help);
+						}
+						if (match == MATCH_ALL && node->exec != NULL) {
+							term_push_exec_argv(term, arg->content);
+							term_exec_run(term, node->exec);
+							term_pop_exec_argv(term);
+						}
+					}
+				}
+			}
+		} else {
+			match = MATCH_ALL;
+			if (arg == NULL) {
+				term_hints_add(term, node->word, node->help);
+				if (node->optval != NULL && node->exec != NULL) {
+					term_push_exec_argv(term, node->optval);
+					term_exec_run(term, node->exec);
+					term_pop_exec_argv(term);
+				}
+			} else {
+				if (arg->next == NULL) {
+					if (!term->spacetail) { /* need complete or print help */
+					term_hints_add(term, node->word, node->help);
+					}
+					if (node->exec != NULL) {
+						term_push_exec_argv(term, arg->content);
+						term_exec_run(term, node->exec);
+						term_pop_exec_argv(term);
+					}
+				}
+			}
+		}
+		if (node->children != NULL) {
+			if (node->optval != NULL) { /* is an optional node */
+				term_push_exec_argv(term, node->optval);
+				for (p_child = node->children; p_child != NULL; p_child = p_child->next) {
+					walk_node(term, p_child, arg);
+				}
+				term_pop_exec_argv(term);
+			}
+			if (match == MATCH_ALL && arg && (arg->next || term->spacetail)) {
+				term_push_exec_argv(term, arg->content);
+				for (p_child = node->children; p_child != NULL; p_child = p_child->next) {
+					walk_node(term, p_child, arg->next);
+				}
+				term_pop_exec_argv(term);
+			}
+		}
+	}
+}
+
+static void term_output_complete_or_help(Terminal *term) {
+	int i = 0, comman_len = 0, overlay = 0, start_pos = 0, end_pos = 0, completed = 0;
+	int word_width = 0, with_help = 0, rows = 0, cols = 0, words_len = 0, word_num = 0;
+	TermComplete *p_com = NULL;
+	TermArg *p_lastarg = NULL;
 
 	if (term->complete != NULL) {
 		comman_len = (int)strlen(term->complete->word);
 		// find common string for auto complete
-		for (p_cur = term->complete->next; (p_cur != NULL) && (comman_len > 0); p_cur = p_cur->next) {
-			while ((comman_len > 0) && strncasecmp(term->complete->word, p_cur->word, comman_len)) {
+		for (p_com = term->complete->next; (p_com != NULL) && (comman_len > 0); p_com = p_com->next) {
+			while ((comman_len > 0) && strncasecmp(term->complete->word, p_com->word, comman_len)) {
 				comman_len--;
 			}
 		}
@@ -861,71 +1018,73 @@ void term_completion(TERMINAL *term) {
 			if (term->command_args != NULL) {
 				for (p_lastarg = term->command_args; p_lastarg->next != NULL; p_lastarg = p_lastarg->next);
 			}
-			if (p_lastarg && p_lastarg->endword && term->command_args != NULL) {
+			if (p_lastarg && !term->spacetail && term->command_args != NULL) {
 				overlay = strlen(p_lastarg->content);
 			}
-			start_pos = term->num - overlay;
-			end_pos = start_pos + comman_len;
-			if (comman_len > overlay) {
-				/* malloc for complete, command_len - overlay is the size that need expand */
-				tt_buffer_swapto_malloced(&(term->line_command), comman_len - overlay);
+			if (overlay > 0) {
+				start_pos = term->num - overlay;
+				end_pos = start_pos + comman_len;
+				if (comman_len > overlay) {
+					/* malloc for complete, command_len - overlay is the size that need expand */
+					tt_buffer_swapto_malloced(&(term->line_command), comman_len - overlay);
+				}
+				if (memcmp(term->line_command.content + start_pos, term->complete->word, comman_len)) {
+					memcpy(term->line_command.content + start_pos, term->complete->word, comman_len);
+					completed = 1;
+				}
+				term->line_command.used += comman_len - overlay;
+				*(term->line_command.content + end_pos) = '\0';
+				if (term->complete->next == NULL) { /* only one match, add SPACE at the end of word */
+					tt_buffer_swapto_malloced(&(term->line_command), 1); /* malloc for complete SPACE */
+					strcat((char *)(term->line_command.content), " ");
+					end_pos += 1;
+					term->line_command.used += 1;
+					completed = 1;
+				}
+				// printf("term->pos %d, start_pos %d, end_pos %d\n", term->pos, start_pos, end_pos);
+				term_refresh(term, end_pos, end_pos, start_pos);
 			}
-			if (memcmp(term->line_command.content + start_pos, term->complete->word, comman_len)) {
-				memcpy(term->line_command.content + start_pos, term->complete->word, comman_len);
-				has_change = 1;
-			}
-			term->line_command.used += comman_len - overlay;
-			*(term->line_command.content + end_pos) = '\0';
-			if (term->complete->next == NULL) { /* only one match, add SPACE at the end of word */
-				tt_buffer_swapto_malloced(&(term->line_command), 1); /* malloc for complete SPACE */
-				strcat((char *)(term->line_command.content), " ");
-				end_pos += 1;
-				term->line_command.used += 1;
-				has_change = 1;
-			}
-			// printf("term->pos %d, start_pos %d, end_pos %d\n", term->pos, start_pos, end_pos);
-			term_refresh(term, end_pos, end_pos, start_pos);
 		}
 	}
 
-	if (has_change == 0) {
+	if (completed == 0) { /* print help informations */
 		with_help = 0;
 		word_width = 0;
-		for (p_cur = term->complete; p_cur != NULL; p_cur = p_cur->next) {
-			if (p_cur->help != NULL && p_cur->help[0] != '\0') {
+		for (p_com = term->complete; p_com != NULL; p_com = p_com->next) {
+			if (p_com->help != NULL && p_com->help[0] != '\0') {
 				with_help = 1;
 			}
-			if ((int)strlen(p_cur->word) > word_width) {
-				word_width = strlen(p_cur->word);
+			if ((int)strlen(p_com->word) > word_width) {
+				word_width = strlen(p_com->word);
 			}
 		}
-		for (p_cur = term->hints; p_cur != NULL; p_cur = p_cur->next) {
-			if (p_cur->help != NULL && p_cur->help[0] != '\0') {
+		for (p_com = term->hints; p_com != NULL; p_com = p_com->next) {
+			if (p_com->help != NULL && p_com->help[0] != '\0') {
 				with_help = 1;
 			}
-			if ((int)strlen(p_cur->word) > word_width) {
-				word_width = strlen(p_cur->word);
+			if ((int)strlen(p_com->word) > word_width) {
+				word_width = strlen(p_com->word);
 			}
 		}
 		if (word_width > 0) {
 			term_printf(term, "\n");
 			if (with_help) { /* print word and help line by line */
-				for (p_cur = term->complete; p_cur != NULL; p_cur = p_cur->next) {
+				for (p_com = term->complete; p_com != NULL; p_com = p_com->next) {
 					term_color_set(term, TERM_STYLE_BOLD);
-					term_printf(term, "%s", p_cur->word);
+					term_printf(term, "%s", p_com->word);
 					term_color_set(term, TERM_COLOR_DEFAULT);
-					if (p_cur->help != NULL) {
-						term_printf(term, "%*s	 %s\n", word_width - strlen(p_cur->word), "", p_cur->help);
+					if (p_com->help != NULL) {
+						term_printf(term, "%*s	 %s\n", word_width - strlen(p_com->word), "", p_com->help);
 					} else {
 						term_printf(term, "\n"); /* show word only if help is NULL */
 					}
 				}
-				for (p_cur = term->hints; p_cur != NULL; p_cur = p_cur->next) {
+				for (p_com = term->hints; p_com != NULL; p_com = p_com->next) {
 					term_color_set(term, TERM_STYLE_UNDERSCORE);
-					term_printf(term, "%s", p_cur->word);
+					term_printf(term, "%s", p_com->word);
 					term_color_set(term, TERM_COLOR_DEFAULT);
-					if (p_cur->help != NULL) {
-						term_printf(term, "%*s	 %s\n", word_width - strlen(p_cur->word), "", p_cur->help);
+					if (p_com->help != NULL) {
+						term_printf(term, "%*s	 %s\n", word_width - strlen(p_com->word), "", p_com->help);
 					} else {
 						term_printf(term, "\n");
 					}
@@ -934,61 +1093,61 @@ void term_completion(TERMINAL *term) {
 				term_screen_get(term, &cols, &rows);
 				words_len = 0;
 				i = 0;
-				for (p_cur = term->complete; p_cur != NULL; p_cur = p_cur->next, i++) {
+				for (p_com = term->complete; p_com != NULL; p_com = p_com->next, i++) {
 					if (i != 0) {
 						words_len += 2;
 					}
-					words_len += strlen(p_cur->word);
+					words_len += strlen(p_com->word);
 				}
-				for (p_cur = term->hints; p_cur != NULL; p_cur = p_cur->next, i++) {
+				for (p_com = term->hints; p_com != NULL; p_com = p_com->next, i++) {
 					if (i != 0) {
 						words_len += 2;
 					}
-					words_len += strlen(p_cur->word);
+					words_len += strlen(p_com->word);
 				}
 				if (words_len <= cols) {
 					i = 0;
-					for (p_cur = term->complete; p_cur != NULL; p_cur = p_cur->next, i++) {
+					for (p_com = term->complete; p_com != NULL; p_com = p_com->next, i++) {
 						if (i != 0) {
 							term_printf(term, "  ");
 						}
 						term_color_set(term, TERM_STYLE_BOLD);
-						term_printf(term, "%s", p_cur->word);
+						term_printf(term, "%s", p_com->word);
 						term_color_set(term, TERM_COLOR_DEFAULT);
 					}
-					for (p_cur = term->hints; p_cur != NULL; p_cur = p_cur->next, i++) {
+					for (p_com = term->hints; p_com != NULL; p_com = p_com->next, i++) {
 						if (i != 0) {
 							term_printf(term, "  ");
 						}
 						term_color_set(term, TERM_STYLE_UNDERSCORE);
-						term_printf(term, "%s", p_cur->word);
+						term_printf(term, "%s", p_com->word);
 						term_color_set(term, TERM_COLOR_DEFAULT);
 					}
 					term_printf(term, "\n");
 				} else { /* print word as a table */
 					word_num = ((cols - word_width) / (word_width + 2)) + 1;
 					i = 0;
-					for (p_cur = term->complete; p_cur != NULL; p_cur = p_cur->next, i++) {
+					for (p_com = term->complete; p_com != NULL; p_com = p_com->next, i++) {
 						if (i % word_num == 0) {
 							term_printf(term, "%s", i ? "\n" : "");
 						} else {
 							term_printf(term, "  ");
 						}
 						term_color_set(term, TERM_STYLE_BOLD);
-						term_printf(term, "%s", p_cur->word);
+						term_printf(term, "%s", p_com->word);
 						term_color_set(term, TERM_COLOR_DEFAULT);
-						term_printf(term, "%*s", word_width - strlen(p_cur->word), "");
+						term_printf(term, "%*s", word_width - strlen(p_com->word), "");
 					}
-					for (p_cur = term->hints; p_cur != NULL; p_cur = p_cur->next, i++) {
+					for (p_com = term->hints; p_com != NULL; p_com = p_com->next, i++) {
 						if (i % word_num == 0) {
 							term_printf(term, "%s", i ? "\n" : "");
 						} else {
 							term_printf(term, "  ");
 						}
 						term_color_set(term, TERM_STYLE_UNDERSCORE);
-						term_printf(term, "%s", p_cur->word);
+						term_printf(term, "%s", p_com->word);
 						term_color_set(term, TERM_COLOR_DEFAULT);
-						term_printf(term, "%*s", word_width - strlen(p_cur->word), "");
+						term_printf(term, "%*s", word_width - strlen(p_com->word), "");
 					}
 					term_printf(term, "\n");
 				}
@@ -998,298 +1157,272 @@ void term_completion(TERMINAL *term) {
 			term_refresh(term, strlen((char *)(term->line_command.content)), strlen((char *)(term->line_command.content)), 0);
 		}
 	}
-	term_complete_free(term);
-	term_hints_free(term);
+
 }
 
-void term_execute(TERMINAL *term) {
-	int i = 0, ret = 0;
-	TERM_ARGS *p_arg = NULL;
+static void term_walk(Terminal *term) {
+	term->exec_argc = 0;
+	term->exec_num = 0;
+	walk_node(term, term->root, term->command_args); /* recurise. found completion, help and exec info */
 
-	term_history_add(term);
-	term->event = E_EVENT_EXEC;
-	term->arg_prev = term->arg_cur = NULL;
-	term->arg_next = term->command_args;
-	if (term->event_cb != NULL) {
-		ret = term->event_cb(term);
-		if (ret != 0) {
-			term_printf(term, "command not found.\n");
-#if 0
-			for (i = 0, p_arg = term->command_args; p_arg != NULL; p_arg = p_arg->next, i++) {
-				term_printf(term, "\targ[%d]: \"%s\"\n", i, p_arg->content);
-			}
-#endif
-			term->event = E_EVENT_NONE;
-		}
-	}
-	term_complete_free(term);
-	term_hints_free(term);
- }
-
-int argument(TERMINAL *term, const char *word, const char *help) {
-	int result = 0;
-	TERM_ARGS *p_arg = term->arg_cur;
-
-	if (term->event == E_EVENT_COMPLETE || term->event == E_EVENT_HELP) {
-		if (p_arg == NULL || p_arg->endword) {
-			term_hints_add(term, p_arg, word, help);
-		}
-		if (p_arg != NULL && !p_arg->endword) {
-			result |= MATCH_ACT_FORWARD;
-		}
-	}
-	if (term->event == E_EVENT_EXEC) {
-		if (p_arg != NULL) {
-			if (p_arg->next == NULL) {
-				result |= MATCH_ACT_EXEC;
-				term->event = E_EVENT_NONE;
-			}
-			if (!p_arg->endword) {
-				result |= MATCH_ACT_FORWARD;
-			}
-		}
-	}
-	return result;
-}
-
-int keyword(TERMINAL *term, const char *target, const char *word, const char *help) {
-	int result = 0;
-	TERM_ARGS *p_arg = term->arg_cur;
-
-	if (p_arg == NULL || *(p_arg->content) == '\0') {
-		result |= MATCH_EMPTY;
-	} else {
-		if (0 == strncasecmp(p_arg->content, target, strlen(p_arg->content))) {
-			result |= MATCH_PART;
-			if (0 == strcasecmp(p_arg->content, target)) {
-				result |= MATCH_ENTIRE;
-			}
-		}
-	}
-	if (term->event == E_EVENT_COMPLETE || term->event == E_EVENT_HELP) {
-		if (result & MATCH_ENTIRE) {
-			if (!p_arg->endword) { /* line_command end with SPACE */
-				result |= MATCH_ACT_FORWARD;
-			} else {
-				result |= MATCH_ACT_EXPAND; /* need expand SPACE */
-			}
-		} else if (result/* equal: result & (MATCH_EMPTY | MATCH_PART) */) {
-			result |= MATCH_ACT_EXPAND; /* arg is part match or empty, need complete */
-		}
+	/* maybe found completion and help info */
+	if (term->event == E_EVENT_COMPLETE) {
+		term_output_complete_or_help(term);
 	} else if (term->event == E_EVENT_EXEC) {
-		if (result & MATCH_ENTIRE) {
-			if (p_arg->next == NULL) {
-				result |= MATCH_ACT_EXEC;
-				term->event = E_EVENT_NONE;
-			}
-			if (!p_arg->endword) { /* line_command end with SPACE */
-				result |= MATCH_ACT_FORWARD;
-			}
+		term_history_add(term);
+		if (term->exec_num == 0) {
+			printf("command not found.\n");
+		} else if (term->exec_num > 1) {
+			printf("WARN: %d commands executed.\n", term->exec_num);
+		}
+		if (!term->exit_flag) {
+			term_print_prompt(term);
+			term_refresh(term, 0, 0, 0);
 		}
 	}
-	if ((result & MATCH_ACT_EXPAND) && (!p_arg || (p_arg->endword && !p_arg->next))) {
-		term_complete_add(term, p_arg, word, help);
-	}
-	return result;
+	term->event = E_EVENT_NONE;
+
+	term_complete_free(term);
+	term_hints_free(term);
 }
 
-void term_exit(TERMINAL *term) {
+void term_exit(Terminal *term) {
 	term->exit_flag = 1;
 }
 
-int term_readline(TERMINAL *term) {
+int term_loop(Terminal *term) {
 	int key = 0;
-	int need_exit = 0, need_exec = 0, length = 0, new_pos = 0;
+	int length = 0, new_pos = 0;
 
-	while (1) {/* loop once every command */
-		term_print_prompt(term);
-		term_refresh(term, 0, 0, 0);
-		while (1) { /* loop once every key press */
-			key = term_getkey(term);
-			switch (key) {
-				/* move */
-				case KEY_LEFT:
-				case KEY_CTRL('B'):
-					if (term->pos > 0) {
-						term_refresh(term, term->pos - 1, term->num, -1);
-					}
-					break;
-				case KEY_RIGHT:
-				case KEY_CTRL('F'):
-					if (term->pos < (int)(term->line_command.used)) {
-						term_refresh(term, term->pos + 1, term->num, -1);
-					}
-					break;
-				case KEY_CTRL('A'): // Move cursor to start of line.
-				case KEY_HOME:
-					term_refresh(term, 0, term->num, -1);
-					break;
-				case KEY_CTRL('E'): // Move cursor to end of line
-				case KEY_END:
-					term_refresh(term, term->num, term->num, -1);
-					break;
-				case KEY_ALT('b'):	// Move back a word.
-				case KEY_ALT('B'):
-				case KEY_ALT(KEY_LEFT):
-				case KEY_CTRL(KEY_LEFT):
-					if (term->pos > 0) {
-						for (new_pos = term->pos; (new_pos > 0) && isdelimiter(*(term->line_command.content + new_pos - 1)); new_pos--);
-						for (; (new_pos > 0) && !isdelimiter(*(term->line_command.content + new_pos - 1)); new_pos--);
-						term_refresh(term, new_pos, term->num, -1);
-					}
-					break;
-				case KEY_ALT('f'):	 // Move forward a word.
-				case KEY_ALT('F'):
-				case KEY_ALT(KEY_RIGHT):
-				case KEY_CTRL(KEY_RIGHT):
-					if (term->pos < term->num) {
-						for (new_pos = term->pos; (new_pos < term->num) && isdelimiter(*(term->line_command.content + new_pos)); new_pos++);
-						for (; (new_pos < term->num) && !isdelimiter(*(term->line_command.content + new_pos)); new_pos++);
-						for (; (new_pos < term->num) && isdelimiter(*(term->line_command.content + new_pos)); new_pos++);
-						term_refresh(term, new_pos, term->num, -1);
-					}
-					break;
+	term_print_prompt(term);
+	term_refresh(term, 0, 0, 0);
+	while (1) { /* loop once every key press */
+		key = term_getkey(term);
+		switch (key) {
+			/* move */
+			case KEY_LEFT:
+			case KEY_CTRL('B'):
+				if (term->pos > 0) {
+					term_refresh(term, term->pos - 1, term->num, -1);
+				}
+				break;
+			case KEY_RIGHT:
+			case KEY_CTRL('F'):
+				if (term->pos < (int)(term->line_command.used)) {
+					term_refresh(term, term->pos + 1, term->num, -1);
+				}
+				break;
+			case KEY_CTRL('A'): // Move cursor to start of line.
+			case KEY_HOME:
+				term_refresh(term, 0, term->num, -1);
+				break;
+			case KEY_CTRL('E'): // Move cursor to end of line
+			case KEY_END:
+				term_refresh(term, term->num, term->num, -1);
+				break;
+			case KEY_ALT('b'):	// Move back a word.
+			case KEY_ALT('B'):
+			case KEY_ALT(KEY_LEFT):
+			case KEY_CTRL(KEY_LEFT):
+				if (term->pos > 0) {
+					for (new_pos = term->pos; (new_pos > 0) && isdelimiter(*(term->line_command.content + new_pos - 1)); new_pos--);
+					for (; (new_pos > 0) && !isdelimiter(*(term->line_command.content + new_pos - 1)); new_pos--);
+					term_refresh(term, new_pos, term->num, -1);
+				}
+				break;
+			case KEY_ALT('f'):	 // Move forward a word.
+			case KEY_ALT('F'):
+			case KEY_ALT(KEY_RIGHT):
+			case KEY_CTRL(KEY_RIGHT):
+				if (term->pos < term->num) {
+					for (new_pos = term->pos; (new_pos < term->num) && isdelimiter(*(term->line_command.content + new_pos)); new_pos++);
+					for (; (new_pos < term->num) && !isdelimiter(*(term->line_command.content + new_pos)); new_pos++);
+					for (; (new_pos < term->num) && isdelimiter(*(term->line_command.content + new_pos)); new_pos++);
+					term_refresh(term, new_pos, term->num, -1);
+				}
+				break;
 
-				/* history */
-				case KEY_UP:
-				case KEY_DOWN:
-					if (key == KEY_UP) {
-						term->history_cursor = (term->history_cursor == NULL) ? term->history : term->history_cursor->prev;
+			/* history */
+			case KEY_UP:
+			case KEY_DOWN:
+				if (key == KEY_UP) {
+					if (term->history_cur == -1) {
+						term->history_cur = term->history_cnt - 1;
 					} else {
-						if (term->history_cursor != NULL) {
-							term->history_cursor = term->history_cursor->next;
-						}
+						term->history_cur -= 1;
 					}
-					if (term->history_cursor != NULL) {
-						term->line_command.used = 0;
-						term_command_write(term, term->history_cursor->content, strlen(term->history_cursor->content));
-						length = term->line_command.used;
-						term_refresh(term, length, length, 0);
+				} else {
+					if (term->history_cur + 1 >= term->history_cnt) {
+						term->history_cur = -1;
 					} else {
+						term->history_cur += 1;
+					}
+				}
+				if (term->history_cur != -1) {
+					term->line_command.used = 0;
+					term_command_write(term, term->history[term->history_cur], strlen(term->history[term->history_cur]));
+					length = term->line_command.used;
+					term_refresh(term, length, length, 0);
+				} else {
+					term_refresh(term, 0, 0, 0);
+				}
+				break;
+
+			/* complete */
+			case KEY_TAB:		// Autocomplete (same with KEY_CTRL('I'))
+				term->event = E_EVENT_COMPLETE;
+				term_split_args(term);
+				term_walk(term);
+				break;
+
+			/* edit */
+			case KEY_BACKSPACE: // Delete char to left of cursor
+				if (term->pos > 0) {
+					memmove(term->line_command.content + term->pos - 1, term->line_command.content + term->pos, term->line_command.used - term->pos + 1);
+					term_refresh(term, term->pos - 1, term->num - 1, term->pos - 1);
+				}
+				break;
+			case KEY_DELETE: // Delete character under cursor
+			case KEY_CTRL('D'):
+				if (term->pos < (int)(term->line_command.used)) {
+					memmove(term->line_command.content + term->pos, term->line_command.content + term->pos + 1, term->line_command.used - term->pos);
+					term->line_command.used -= 1;
+					term_refresh(term, term->pos, term->num - 1, term->pos);
+				} else if ((0 == term->line_command.used) && (key == KEY_CTRL('D'))) { // If an empty line, EOF
+					term_printf(term, "exit because Ctrl+D\n");
+					goto func_end;
+				}
+				break;
+			case KEY_CR:
+			case KEY_LF:
+				term_printf(term, "\n");
+				if (term->line_command.used > 0) {
+					if (term_split_args(term) == 0) {
+						term->event = E_EVENT_EXEC;
+						term_walk(term);
+					} else {
+						term_print_prompt(term);
 						term_refresh(term, 0, 0, 0);
 					}
-					break;
-
-				/* complete */
-				case KEY_TAB:		// Autocomplete (same with KEY_CTRL('I'))
-					term_completion(term);
-					break;
-
-				/* edit */
-				case KEY_BACKSPACE: // Delete char to left of cursor
-					if (term->pos > 0) {
-						memmove(term->line_command.content + term->pos - 1, term->line_command.content + term->pos, term->line_command.used - term->pos + 1);
-						term_refresh(term, term->pos - 1, term->num - 1, term->pos - 1);
-					}
-					break;
-				case KEY_DELETE: // Delete character under cursor
-				case KEY_CTRL('D'):
-					if (term->pos < (int)(term->line_command.used)) {
-						memmove(term->line_command.content + term->pos, term->line_command.content + term->pos + 1, term->line_command.used - term->pos);
-						term->line_command.used -= 1;
-						term_refresh(term, term->pos, term->num - 1, term->pos);
-					} else if ((0 == term->line_command.used) && (key == KEY_CTRL('D'))) { // If an empty line, EOF
-						term_printf(term, "exit because press Ctrl+D\n");
-						need_exit = -1;
-					}
-					break;
-				case KEY_CR:
-				case KEY_LF:
-					term_printf(term, "\n");
-					if (term->line_command.used > 0) {
-						if (term_split_args(term) == 0) {
-							need_exec = 1;
-						} else {
-							term_print_prompt(term);
-							term_refresh(term, 0, 0, 0);
-						}
+				} else {
+					if (term->multiline && term_split_args(term) == 0) { /* function need return while in multiline mode */
+						term->event = E_EVENT_EXEC;
+						term_walk(term);
 					} else {
-						if (term->multiline && term_split_args(term) == 0) { /* function need return while in multiline mode */
-							need_exec = 1;
-						} else {
-							term_print_prompt(term);
-							term_refresh(term, 0, 0, 0);
-						}
+						term_print_prompt(term);
+						term_refresh(term, 0, 0, 0);
 					}
-					term->history_cursor = NULL;
-					break;
-				case KEY_CTRL('C'):
-				case KEY_CTRL('G'):
-					if (term->multiline) {
-						term->multiline = 0;
+				}
+				term->history_cur = -1;
+				break;
+			case KEY_CTRL('C'):
+			case KEY_CTRL('G'):
+				if (term->multiline) {
+					term->multiline = 0;
+					term_printf(term, "%s\n", (key == KEY_CTRL('C')) ? "^C" : "^G");
+					tt_buffer_empty(&(term->prefix));
+					term_print_prompt(term);
+					term_refresh(term, 0, 0, 0);
+				} else {
+					if (term->num > 0) {
 						term_printf(term, "%s\n", (key == KEY_CTRL('C')) ? "^C" : "^G");
-						tt_buffer_empty(&(term->prefix));
 						term_print_prompt(term);
 						term_refresh(term, 0, 0, 0);
 					} else {
-						if (term->num > 0) {
-							term_printf(term, "%s\n", (key == KEY_CTRL('C')) ? "^C" : "^G");
-							term_print_prompt(term);
-							term_refresh(term, 0, 0, 0);
-						} else {
-							term_printf(term, "exit because press Ctrl+%s\n", (key == KEY_CTRL('C')) ? "C" : "G");
-							need_exit = -1;
-						}
+						term_printf(term, "exit because Ctrl+%s\n", (key == KEY_CTRL('C')) ? "C" : "G");
+						goto func_end;
 					}
-					break;
-				case KEY_CTRL('Z'):
-#if defined(_WIN32)
-					term_printf(term, "exit because press Ctrl+Z\n");
-					need_exit = -1;
-#else
-					raise(SIGSTOP);
-#endif
-					break;
-				default:
-					if (key >= ' ' && key <= '~') { /* key value may be too large, must not use isprint(key) */
-						tt_buffer_swapto_malloced(&(term->line_command), 1);  /* malloc for complete SPACE */
-						memmove(term->line_command.content + term->pos + 1, term->line_command.content + term->pos, term->num - term->pos);
-						*(term->line_command.content + term->pos) = (char)key;
-						term_refresh(term, term->pos + 1, term->num + 1, term->pos);
-					} else {
-						// printf("unhandler key: %08x\n", key);
-					}
-					break;
-			}
-			if (need_exec || need_exit) {
+				}
 				break;
-			}
-		}
-		if (need_exec) {
-			term_execute(term);
-			if (term->exit_flag) {
-				return -1;
-			}
-			need_exec = 0;
-			break; /* delete this break if no need exit func every time */
-		}
-		if (need_exit) {
+			case KEY_CTRL('Z'):
+#if defined(_WIN32)
+				term_printf(term, "exit because Ctrl+Z\n");
+				goto func_end;
+#else
+				raise(SIGSTOP);
+#endif
+				break;
+			default:
+				if (key >= ' ' && key <= '~') { /* key value may be too large, must not use isprint(key) */
+					tt_buffer_swapto_malloced(&(term->line_command), 1);  /* malloc for complete SPACE */
+					memmove(term->line_command.content + term->pos + 1, term->line_command.content + term->pos, term->num - term->pos);
+					*(term->line_command.content + term->pos) = (char)key;
+					term_refresh(term, term->pos + 1, term->num + 1, term->pos);
+				} else {
+					// printf("unhandler key: %08x\n", key);
+				}
+				break;
+		} /* end of switch(key) */
+		if (term->exit_flag) {
 			break;
 		}
 	}
-	if (need_exit < 0) { /* Ctrl+C */
-		term_free_args(term);
-		return -1;
-	}
+func_end:
+	term_free_args(term);
 	return 0;
 }
-TERM_ARGS *term_argpush(TERMINAL *term) {
-	term->arg_prev = term->arg_cur;
-	term->arg_cur = term->arg_next;
-	if (term->arg_cur) {
-		term->arg_next = term->arg_cur->next;
-	} else {
-		term->arg_next = NULL;
+TermNode *term_root_create() {
+	TermNode *root = NULL;
+	root = MY_MALLOC(sizeof(TermNode));
+	if (root == NULL) {
+		goto func_end;
 	}
-	return term->arg_cur;
+	memset(root, 0x00, sizeof(TermNode));
+func_end:
+	return root;
 }
-TERM_ARGS *term_argpop(TERMINAL *term) {
-	term->arg_next = term->arg_cur;
-	term->arg_cur = term->arg_prev;
-	if (term->arg_cur) {
-		term->arg_prev = term->arg_cur->prev;
-	} else {
-		term->arg_prev = NULL;
+
+static void node_free(TermNode *node) {
+	TermNode *p_child = NULL, *p_next = NULL;
+	for (p_child = node->children; p_child != NULL; p_child = p_next) {
+		p_next = p_child->next;
+		node_free(p_child);
 	}
-	return term->arg_cur;
+	free(node->word);
+	if (node->help != NULL) {
+		free(node->help);
+	}
+	if (node->optval != NULL) {
+		free(node->optval);
+	}
+	free(node);
 }
+
+void term_root_free(TermNode *root) {
+	node_free(root);
+}
+
+static TermNode *term_node_add(TermNode *parent, NodeType type, const char *word, const char *help, const char *optval, TermExec exec) {
+	TermNode *new_node = NULL, *tail = NULL;
+	new_node = MY_MALLOC(sizeof(TermNode));
+	if (new_node == NULL) {
+		goto func_end;
+	}
+	memset(new_node, 0x00, sizeof(TermNode));
+	new_node->type = type;
+	new_node->exec = exec;
+	new_node->word = strdup(word);
+	if (help != NULL) {
+		new_node->help = strdup(help);
+	}
+	if (optval != NULL && optval[0] != '\0') {
+		new_node->optval = strdup(optval);
+	}
+	if (parent->children == NULL) {
+		parent->children = new_node;
+	} else {
+		for (tail = parent->children; tail->next != NULL; tail = tail->next);
+		tail->next = new_node;
+	}
+func_end:
+	return new_node;
+}
+
+TermNode *term_node_keyword_add(TermNode *parent, const char *word, const char *help, const char *optval, TermExec exec) {
+	return term_node_add(parent, E_NODETYPE_KEYWORD, word, help, optval, exec);
+}
+
+TermNode *term_node_argument_add(TermNode *parent, const char *word, const char *help, const char *optval, TermExec exec) {
+	return term_node_add(parent, E_NODETYPE_ARGUMENT, word, help, optval, exec);
+}
+

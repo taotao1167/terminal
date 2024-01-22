@@ -11,14 +11,12 @@
 extern "C" {
 #endif
 
-#define HISTORY_LENGTH     20 /* 0 means no limits */
+#define HISTORY_LENGTH     80
+#define MAX_EXEC_ARGC      32
 
-#define MATCH_EMPTY        (1 << 0)
-#define MATCH_PART         (1 << 1)
-#define MATCH_ENTIRE       (1 << 2)
-#define MATCH_ACT_EXPAND   (0x10 << 0)
-#define MATCH_ACT_FORWARD  (0x10 << 1)
-#define MATCH_ACT_EXEC     (0x10 << 2)
+#define MATCH_NONE         0
+#define MATCH_PART         1
+#define MATCH_ALL          2
 
 #define TERM_FGCOLOR_DEFAULT         0
 #define TERM_FGCOLOR_BLACK           30
@@ -62,77 +60,93 @@ extern "C" {
 #define TERM_STYLE_INVERSE           0x080000
 #define TERM_COLOR_DEFAULT          TERM_FGCOLOR_DEFAULT | TERM_BGCOLOR_DEFAULT
 
-typedef enum E_TERM_EVENT {
+typedef enum TermEvent {
 	E_EVENT_NONE,
 	E_EVENT_COMPLETE,
 	E_EVENT_HELP,
 	E_EVENT_EXEC
-}TERM_EVENT;
+} TermEvent;
 
-struct ST_TERM_STRINGS {
-	char *content;
-	struct ST_TERM_STRINGS *prev;
-	struct ST_TERM_STRINGS *next;
-};
-typedef struct ST_TERM_STRINGS TERM_LINES;
-typedef struct ST_TERM_STRINGS TERM_HISTORY;
-
-typedef struct ST_TERM_ARGS {
-	char *content;
-	int endword; /* true if command end with word instead of SPACE */
-	struct ST_TERM_ARGS *prev;
-	struct ST_TERM_ARGS *next;
-}TERM_ARGS;
-
-struct ST_TERM_WORDHELP {
+typedef struct TermWordHelp {
 	char *word;
 	char *help;
-	struct ST_TERM_WORDHELP *next;
-};
-typedef struct ST_TERM_WORDHELP TERM_COMPLETE;
-typedef struct ST_TERM_WORDHELP TERM_HINTS;
+	struct TermWordHelp *next;
+} TermWordHelp ;
+typedef struct TermWordHelp TermComplete;
+typedef struct TermWordHelp TermHits;
 
-typedef struct ST_TERMINAL TERMINAL;
-struct ST_TERMINAL {
+typedef enum NodeType {
+	E_NODETYPE_KEYWORD = 1,
+	E_NODETYPE_ARGUMENT = 2,
+} NodeType;
+
+struct Terminal;
+typedef void (* TermExec)(struct Terminal *term, int argc, const char **argv);
+
+typedef struct TermNode {
+	NodeType type;
+	char *word;
+	char *help;
+	char *optval; /* not null means this node is optional */
+	struct TermNode *children;
+	struct TermNode *next;
+	TermExec exec;
+} TermNode;
+
+typedef struct TermArg {
+	char *content;
+	struct TermArg *next;
+} TermArg;
+
+#ifndef USERTYPE 
+#define USERTYPE void
+#endif
+typedef struct Terminal {
+    char *init_content;
+    int init_content_offset;
+	TermNode *root; /* a tree */
 	char *prompt;
+	char *default_prompt;
 	unsigned int prompt_color;
-	TT_BUFFER prefix; /* saved content for multilien " ' \ */
+	TT_BUFFER prefix; /* saved content for multiline " ' \ */
 	TT_BUFFER line_command;
 	TT_BUFFER tempbuf; /* for format output */
-	/* TERM_LINES *outlines;  for paging */
-	TERM_HISTORY *history;
-	TERM_HISTORY *history_cursor;
+	int history_cnt;
+	int history_cur; /* current histroy index */
+	char **history; /* histroy content */
 	int pos; /* cursor position */
 	int num; /* length of line_command */
 	int mask; /* set true if need mask */
 	int multiline; /* true if line command end with '\\' or found '\"' or '\'' but not close */
 	int exit_flag; /* set true when need exit term_readline */
-	TERM_EVENT event;
-	TERM_ARGS *command_args;
-	TERM_ARGS *arg_prev, *arg_next, *arg_cur; /* save node for argpush/argpop */
-	TERM_COMPLETE *complete;
-	TERM_HINTS *hints;
-	ssize_t (*read)(void *buf, size_t count);
-	ssize_t (*write)(const void *buf, size_t count);
-	int (*event_cb)(TERMINAL *term);
-	void *userdata; /* set by term_prompt_userdata_set */
-};
+	int spacetail; /* command has space tail or not */
+	TermEvent event;
+	TermArg *command_args;
+	TermComplete *complete;
+	TermHits *hints;
+	int exec_num;
+	int exec_argc;
+	const char *exec_argv[MAX_EXEC_ARGC];
+	ssize_t (*read)(struct Terminal *term, void *buf, size_t count);
+	ssize_t (*write)(struct Terminal *term, const void *buf, size_t count);
+	USERTYPE *userdata; /* set by term_prompt_userdata_set */
+} Terminal;
 
-extern int term_init(TERMINAL *term, const char *prompt, int (*cb)(TERMINAL *term));
-extern void term_exit(TERMINAL *term);
-extern void term_free(TERMINAL *term);
-extern int term_vprintf(TERMINAL *term, const char *format, va_list args);
-extern int term_printf(TERMINAL *term, const char *format, ...);
-extern void term_color_set(TERMINAL *term, unsigned int color);
-extern int term_prompt_set(TERMINAL *term, const char *prompt);
-extern void term_prompt_color_set(TERMINAL *term, unsigned int color);
-extern void term_prompt_userdata_set(TERMINAL *term, void *userdata);
-extern void term_event_bind(TERMINAL *term, int (*cb)(TERMINAL *term));
-extern int term_readline(TERMINAL *term);
-extern TERM_ARGS *term_argpush(TERMINAL *term);
-extern TERM_ARGS *term_argpop(TERMINAL *term);
-extern int keyword(TERMINAL *term, const char *target, const char *word, const char *help);
-extern int argument(TERMINAL *term, const char *word, const char *help);
+TermNode *term_root_create();
+void term_root_free(TermNode *root);
+TermNode *term_node_keyword_add(TermNode *parent, const char *word, const char *help, const char *optval, TermExec exec);
+TermNode *term_node_argument_add(TermNode *parent, const char *word, const char *help, const char *optval, TermExec exec);
+int term_loop(Terminal *term);
+
+extern int term_init(Terminal *term, const char *prompt, TermNode *root, const char *init_content);
+extern void term_exit(Terminal *term);
+extern void term_free(Terminal *term);
+extern void term_color_set(Terminal *term, unsigned int color);
+extern int term_prompt_set(Terminal *term, const char *prompt);
+extern void term_prompt_color_set(Terminal *term, unsigned int color);
+extern void term_userdata_set(Terminal *term, USERTYPE *userdata);
+extern void term_event_bind(Terminal *term, int (*cb)(Terminal *term));
+extern int term_readline(Terminal *term);
 
 #ifdef __cplusplus
 }
