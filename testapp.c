@@ -1,8 +1,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32)
+#include <windows.h>
+#include "w32_pthread.h"
+#define usleep(a) Sleep((a) / 1000)
+#define sleep(a) Sleep((a) * 1000)
+#define pthread_detach(a)
+#define getpid() GetCurrentThreadId()
+#else
 #include <unistd.h>
 #include <pthread.h>
+#endif
 #include "terminal.h"
 
 static void *thread_func(void *userdata) {
@@ -52,7 +61,7 @@ func_end:
 	}
 }
 static void cmd_printasync(Terminal *term, int argc, const char **argv) {
-	pthread_t task_id;
+	static pthread_t task_id;
 	pthread_create(&task_id, NULL, thread_func, term);
 	pthread_detach(task_id);
 }
