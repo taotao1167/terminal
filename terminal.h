@@ -146,6 +146,7 @@ extern void term_userdata_set(Terminal *term, void *userdata);
 extern void *term_userdata_get(Terminal *term);
 extern const char *term_getline(Terminal *term, const char *prefix);
 extern const char *term_password(Terminal *term, const char *prefix);
+extern int term_printf(Terminal *term, const char *format, ...);
 
 #ifdef __cplusplus
 }
