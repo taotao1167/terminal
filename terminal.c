@@ -671,7 +671,7 @@ static int term_getkey(Terminal *term) {
 }
 
 static void term_refresh(Terminal *term, int pos, int num, int refresh_pos) {
-	int i = 0, ret = 0, prompt_len = 0, pos_row = 0, pos_col = 0;;
+	int i = 0, prompt_len = 0, pos_row = 0, pos_col = 0;;
 	int rows = 0, cols = 0;
 
 	term_screen_get(term, &cols, &rows);
