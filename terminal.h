@@ -136,6 +136,7 @@ extern TermNode *term_node_keyword_add(TermNode *parent, const char *word, const
 extern TermNode *term_node_argument_add(TermNode *parent, const char *word, const char *help, const char *optval, TermExec exec);
 extern void term_root_free(TermNode *root);
 extern int term_init(Terminal *term, const char *prompt, TermNode *root, const char *init_content);
+extern int term_root_set(Terminal *term, TermNode *root);
 extern void term_exit(Terminal *term);
 extern void term_free(Terminal *term);
 extern int term_loop(Terminal *term);

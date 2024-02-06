@@ -507,6 +507,11 @@ int term_init(Terminal *term, const char *prompt, TermNode *root, const char *in
 	return 0;
 }
 
+int term_root_set(Terminal *term, TermNode *root) {
+	term->root = root;
+	return 0;
+}
+
 static void wordhelp_free(struct TermWordHelp **p_head) {
 	TermWordHelp *p_cur = NULL, *p_next = NULL;
 
