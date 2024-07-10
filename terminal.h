@@ -72,12 +72,16 @@ typedef struct TermWordHelp {
 	char *help;
 	struct TermWordHelp *next;
 } TermWordHelp ;
+
 typedef struct TermWordHelp TermComplete;
 typedef struct TermWordHelp TermHits;
 
 typedef enum NodeType {
-	E_NODETYPE_KEYWORD = 1,
-	E_NODETYPE_ARGUMENT = 2,
+	TYPE_UNSET = 0,
+	TYPE_KEY,
+	TYPE_TEXT,
+	TYPE_SELECT,
+	TYPE_COLLECT,
 } NodeType;
 
 struct Terminal;
@@ -87,7 +91,8 @@ typedef struct TermNode {
 	NodeType type;
 	char *word;
 	char *help;
-	char *optval; /* not null means this node is optional */
+	struct TermNode *selector; /* option in select will use */
+	struct TermNode *option; /* select will use */
 	struct TermNode *children;
 	struct TermNode *next;
 	TermExec exec;
@@ -132,13 +137,18 @@ typedef struct Terminal {
 
 
 extern TermNode *term_root_create();
-extern TermNode *term_node_keyword_add(TermNode *parent, const char *word, const char *help, const char *optval, TermExec exec);
-extern TermNode *term_node_argument_add(TermNode *parent, const char *word, const char *help, const char *optval, TermExec exec);
+
+extern TermNode *term_node_child_add(TermNode *parent, NodeType type, const char *word, const char *help, TermExec exec);
+extern int term_node_child_del(TermNode *parent, const char *word);
+extern TermNode *term_node_select_add(TermNode *parent, const char *word);
+extern TermNode *term_node_option_add(TermNode *select, const char *word, const char *help);
+extern int term_node_option_del(TermNode *select, const char *word);
+
 extern void term_root_free(TermNode *root);
 extern int term_init(Terminal *term, const char *prompt, TermNode *root, const char *init_content);
 extern int term_root_set(Terminal *term, TermNode *root);
 extern void term_exit(Terminal *term);
-extern void term_free(Terminal *term);
+extern void term_deinit(Terminal *term);
 extern int term_loop(Terminal *term);
 extern void term_color_set(Terminal *term, unsigned int color);
 extern int term_prompt_set(Terminal *term, const char *prompt);
@@ -147,6 +157,7 @@ extern void term_userdata_set(Terminal *term, void *userdata);
 extern void *term_userdata_get(Terminal *term);
 extern const char *term_getline(Terminal *term, const char *prefix);
 extern const char *term_password(Terminal *term, const char *prefix);
+extern int term_vprintf(Terminal *term, const char *format, va_list args);
 extern int term_printf(Terminal *term, const char *format, ...);
 
 #ifdef __cplusplus

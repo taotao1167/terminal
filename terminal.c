@@ -93,28 +93,6 @@ static int term_command_write(Terminal *term, const void *content, size_t count)
 	return tt_buffer_write(&(term->line_command), content, count);
 }
 
-#if 0 /* useless now */
-static int term_command_vprintf(Terminal *term, const char *format, va_list args) {
-	int ret = -1;
-
-	if (0 != tt_buffer_vprintf(&(term->line_command), format, args)) {
-		goto func_end;
-	}
-	ret = 0;
-func_end:
-	return ret;
-}
-
-static int term_command_printf(Terminal *term, const char *format, ...) {
-	int rc;
-	va_list args;
-	va_start(args, format);
-	rc = term_command_vprintf(term, format, args);
-	va_end(args);
-	return rc;
-}
-#endif
-
 static void term_free_args(Terminal *term) {
 	TermArg *p_cur = NULL, *p_next = NULL;
 
@@ -527,7 +505,7 @@ static void wordhelp_free(struct TermWordHelp **p_head) {
 	}
 }
 
-void term_free(Terminal *term) {
+void term_deinit(Terminal *term) {
 	int i = 0;
 	if (term->prompt != NULL) {
 		MY_FREE(term->prompt);
@@ -910,91 +888,6 @@ static int compare_keyword(const char *target, const char *content) {
 	return MATCH_NONE;
 }
 
-static void walk_node(Terminal *term, TermNode *node, TermArg *arg) { /* will recurise */
-	int match = 0;
-	TermNode *p_child = NULL;
-
-	if (node->word == NULL) { /* is root */
-		// printf("work_node: root, input %s\n", arg ? arg->content : "null");
-		if (node->children != NULL) {
-			for (p_child = node->children; p_child != NULL; p_child = p_child->next) {
-				walk_node(term, p_child, arg);
-			}
-			/* TODO if keyword match all, do not search argument
-			for (p_child = node->children; p_child != NULL; p_child = p_child->next) {
-				if (node->type == E_NODETYPE_KEYWORD) {
-				if (node->type == E_NODETYPE_ARGUMENT) {
-					walk_node(term, p_child, arg);
-				}
-			} */
-		}
-	} else {
-		// printf("work_node: %s, input %s\n", node->word, arg ? arg->content : "null");
-		if (node->type == E_NODETYPE_KEYWORD) {
-			if (arg == NULL) {
-				match = MATCH_ALL;
-				term_complete_add(term, node->word, node->help);
-				if (node->optval != NULL && node->exec != NULL) {
-					term_push_exec_argv(term, node->optval);
-					term_exec_run(term, node->exec);
-					term_pop_exec_argv(term);
-				}
-			} else {
-				match = compare_keyword(node->word, arg->content);
-				if (match != MATCH_NONE) {
-					if (arg->next == NULL) {
-						if (!term->spacetail) { /* need complete or print hellp */
-							term_complete_add(term, node->word, node->help);
-						}
-						if (match == MATCH_ALL && node->exec != NULL) {
-							term_push_exec_argv(term, arg->content);
-							term_exec_run(term, node->exec);
-							term_pop_exec_argv(term);
-						}
-					}
-				}
-			}
-		} else {
-			match = MATCH_ALL;
-			if (arg == NULL) {
-				term_hints_add(term, node->word, node->help);
-				if (node->optval != NULL && node->exec != NULL) {
-					term_push_exec_argv(term, node->optval);
-					term_exec_run(term, node->exec);
-					term_pop_exec_argv(term);
-				}
-			} else {
-				if (arg->next == NULL) {
-					if (!term->spacetail) { /* need complete or print help */
-					term_hints_add(term, node->word, node->help);
-					}
-					if (node->exec != NULL) {
-						term_push_exec_argv(term, arg->content);
-						term_exec_run(term, node->exec);
-						term_pop_exec_argv(term);
-					}
-				}
-			}
-		}
-		if (node->children != NULL) {
-			if (node->optval != NULL) { /* is an optional node */
-				term_push_exec_argv(term, node->optval);
-				for (p_child = node->children; p_child != NULL; p_child = p_child->next) {
-					walk_node(term, p_child, arg);
-				}
-				term_pop_exec_argv(term);
-			}
-			if (match == MATCH_ALL && arg && (arg->next || term->spacetail)) {
-				term_push_exec_argv(term, arg->content);
-				for (p_child = node->children; p_child != NULL; p_child = p_child->next) {
-					walk_node(term, p_child, arg->next);
-				}
-				term_pop_exec_argv(term);
-			}
-		}
-	}
-}
-
 static void term_output_complete_or_help(Terminal *term) {
 	int i = 0, comman_len = 0, overlay = 0, start_pos = 0, end_pos = 0, completed = 0;
 	int word_width = 0, with_help = 0, rows = 0, cols = 0, words_len = 0, word_num = 0;
@@ -1163,10 +1056,120 @@ static void term_output_complete_or_help(Terminal *term) {
 	}
 }
 
+#define MAX_DEEP 32
+
+typedef struct WalkSaved {
+	TermNode *node;
+	TermArg *arg;
+	int repeat;
+} WalkSaved;
+
+static inline TermNode *node_get_children(TermNode *node) {
+	if (node->selector != NULL) { /* is a option in group */
+		return node->selector->children;
+	}
+	return node->children;
+}
+static inline TermNode *node_get_option(TermNode *node) {
+	if (node->type == TYPE_SELECT) {
+		return node->option;
+	}
+	return NULL;
+}
 static void term_walk(Terminal *term) {
+	int match = 0, deep = 0;
+	WalkSaved saved[MAX_DEEP];
+	TermNode *node = NULL, *next = NULL;
+	TermArg *arg = NULL;
+
 	term->exec_argc = 0;
 	term->exec_num = 0;
-	walk_node(term, term->root, term->command_args); /* recurise. found completion, help and exec info */
+
+	memset(&saved, 0x00, sizeof(WalkSaved));
+	saved[0].node = term->root->children;
+	saved[0].arg = term->command_args;
+
+	/* walk all nodes */
+	while (1) {
+		node = saved[deep].node;
+		arg = saved[deep].arg;
+		// printf("deep:%d, arg:%s node:%s\n", deep, arg ? arg->content : "null", node ? node->word : "null");
+		match = 0;
+
+		if (node->type == TYPE_SELECT && node_get_option(node) != NULL) { /* process children in selector */
+			saved[deep + 1].node = node_get_option(node);
+			saved[deep + 1].arg = arg;
+			deep++;
+			continue;
+		}
+
+		switch (node->type) {
+			case TYPE_KEY:
+				if (arg == NULL) {
+					 /* is last arg of input */
+					match = MATCH_ALL;
+					term_complete_add(term, node->word, node->help);
+					break; /* break switch */
+				}
+				match = compare_keyword(node->word, arg->content);
+				if (match != MATCH_NONE) {
+					if (arg->next == NULL) {
+						if (!term->spacetail) { /* need complete or print hellp */
+							term_complete_add(term, node->word, node->help);
+						}
+						if (match == MATCH_ALL && node->exec != NULL) {
+							term_push_exec_argv(term, arg->content);
+							term_exec_run(term, node->exec);
+							term_pop_exec_argv(term);
+						}
+					}
+				}
+				break;
+			case TYPE_TEXT:
+				match = MATCH_ALL;
+				if (arg == NULL) {
+					 /* is last arg of input */
+					term_hints_add(term, node->word, node->help);
+					break; /* break switch */
+				}
+				if (arg->next == NULL) {
+					if (!term->spacetail) { /* need complete or print help */
+						term_hints_add(term, node->word, node->help);
+					}
+					if (node->exec != NULL) {
+						term_push_exec_argv(term, arg->content);
+						term_exec_run(term, node->exec);
+						term_pop_exec_argv(term);
+					}
+				}
+				break;
+			default: ;
+		}
+		if (match == MATCH_ALL && arg != NULL && (arg->next || term->spacetail) && node_get_children(node) != NULL) {
+			/* current match, and need check children */
+			term_push_exec_argv(term, arg->content);
+			saved[deep + 1].node = node_get_children(node);
+			saved[deep + 1].arg = arg->next;
+			deep++;
+			continue;
+		}
+		next = node->next;
+		while (next == NULL) {
+			if (node->type == TYPE_SELECT) {
+				term_pop_exec_argv(term);
+			}
+			deep--;
+			if (deep < 0) {
+				break;
+			}
+			node = saved[deep].node;
+			next = node->next;
+		}
+		if (deep < 0) {
+			break;
+		}
+		saved[deep].node = next;
+	}
 
 	/* maybe found completion and help info */
 	if (term->event == E_EVENT_COMPLETE) {
@@ -1461,17 +1464,18 @@ func_end:
 }
 
 static void node_free(TermNode *node) {
-	TermNode *p_child = NULL, *p_next = NULL;
-	for (p_child = node->children; p_child != NULL; p_child = p_next) {
-		p_next = p_child->next;
-		node_free(p_child);
+	TermNode *p_node = NULL, *p_next = NULL;
+	for (p_node = node->children; p_node != NULL; p_node = p_next) {
+		p_next = p_node->next;
+		node_free(p_node);
+	}
+	for (p_node = node->option; p_node != NULL; p_node = p_next) {
+		p_next = p_node->next;
+		node_free(p_node);
 	}
 	MY_FREE(node->word);
 	if (node->help != NULL) {
 		MY_FREE(node->help);
-	}
-	if (node->optval != NULL) {
-		MY_FREE(node->optval);
 	}
 	MY_FREE(node);
 }
@@ -1480,8 +1484,9 @@ void term_root_free(TermNode *root) {
 	node_free(root);
 }
 
-static TermNode *term_node_add(TermNode *parent, NodeType type, const char *word, const char *help, const char *optval, TermExec exec) {
+TermNode *term_node_child_add(TermNode *parent, NodeType type, const char *word, const char *help, TermExec exec) {
 	TermNode *new_node = NULL, *tail = NULL;
+
 	new_node = MY_MALLOC(sizeof(TermNode));
 	if (new_node == NULL || word == NULL) {
 		goto func_end;
@@ -1493,9 +1498,6 @@ static TermNode *term_node_add(TermNode *parent, NodeType type, const char *word
 	if (help != NULL) {
 		new_node->help = MY_STRDUP(help);
 	}
-	if (optval != NULL && optval[0] != '\0') {
-		new_node->optval = MY_STRDUP(optval);
-	}
 	if (parent->children == NULL) {
 		parent->children = new_node;
 	} else {
@@ -1505,13 +1507,71 @@ static TermNode *term_node_add(TermNode *parent, NodeType type, const char *word
 func_end:
 	return new_node;
 }
+int term_node_child_del(TermNode *parent, const char *word) {
+	TermNode *node = NULL, *pre = NULL;
+	int found = 0;
 
-TermNode *term_node_keyword_add(TermNode *parent, const char *word, const char *help, const char *optval, TermExec exec) {
-	return term_node_add(parent, E_NODETYPE_KEYWORD, word, help, optval, exec);
+	for (node = parent->children; node != NULL; node = node->next) {
+		if (0 == strcmp(node->word, word)) {
+			if (pre == NULL) {
+				parent->children = node->next;
+			} else {
+				pre->next = node->next;
+			}
+			node_free(node);
+			found = 1;
+			break;
+		}
+		pre = node;
+	}
+	return !found;
 }
 
-TermNode *term_node_argument_add(TermNode *parent, const char *word, const char *help, const char *optval, TermExec exec) {
-	return term_node_add(parent, E_NODETYPE_ARGUMENT, word, help, optval, exec);
+TermNode *term_node_select_add(TermNode *parent, const char *word) {
+	return term_node_child_add(parent, TYPE_SELECT, word, NULL, NULL);
+}
+
+TermNode *term_node_option_add(TermNode *selector, const char *word, const char *help) {
+	TermNode *new_node = NULL, *tail = NULL;
+
+	new_node = MY_MALLOC(sizeof(TermNode));
+	if (new_node == NULL || word == NULL) {
+		goto func_end;
+	}
+	memset(new_node, 0x00, sizeof(TermNode));
+	new_node->type = TYPE_KEY;
+	new_node->word = MY_STRDUP(word);
+	if (help != NULL) {
+		new_node->help = MY_STRDUP(help);
+	}
+	new_node->selector = selector;
+	if (selector->option == NULL) {
+		selector->option = new_node;
+	} else {
+		for (tail = selector->option; tail->next != NULL; tail = tail->next);
+		tail->next = new_node;
+	}
+func_end:
+	return new_node;
+}
+int term_node_option_del(TermNode *selector, const char *word) {
+	TermNode *node = NULL, *pre = NULL;
+	int found = 0;
+
+	for (node = selector->option; node != NULL; node = node->next) {
+		if (0 == strcmp(node->word, word)) {
+			if (pre == NULL) {
+				selector->option = node->next;
+			} else {
+				pre->next = node->next;
+			}
+			node_free(node);
+			found = 1;
+			break;
+		}
+		pre = node;
+	}
+	return !found;
 }
 
 const char *term_getline(Terminal *term, const char *prefix) {
@@ -1523,6 +1583,14 @@ const char *term_password(Terminal *term, const char *prefix) {
 int term_vprintf(Terminal *term, const char *format, va_list args) {
 	int i = 0, rc = 0, pos_bak = 0;
 
+	if (term == NULL) {
+		rc = vprintf(format, args);
+		goto func_end;
+	}
+	if (term->event == E_EVENT_EXEC) {
+		rc = term_vprintf_inner(term, format, args); /* between command exec, just print */
+		goto func_end;
+	}
 	pos_bak = term->pos;
 	term_cursor_move(term, -(term->num + strlen(term->prompt) + 1), 0);
 	for (i = 0; i < term->num + strlen(term->prompt) + 1; i++) {
@@ -1532,6 +1600,7 @@ int term_vprintf(Terminal *term, const char *format, va_list args) {
 	rc = term_vprintf_inner(term, format, args);
 	term_print_prompt(term); /* will set pos = 0 */
 	term_refresh(term, pos_bak, term->num, 0); /* recover input and pos */
+func_end:
 	return rc;
 }
 int term_printf(Terminal *term, const char *format, ...) {
