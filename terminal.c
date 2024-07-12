@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <inttypes.h>
 #include <string.h>
 #include <stdarg.h>
 
@@ -53,6 +55,16 @@
 #define KEY_PGDN (0x17 << 8)
 #define KEY_INSERT (0x18 << 8)
 #define KEY_DELETE (0x19 << 8)
+
+#define MAX_DEEP 32
+
+typedef struct WalkStacked {
+	TermNode *node;
+	TermArg *arg;
+	uint64_t checked; /* checked options in TYPE_COLLECT */
+	uint64_t walked; /* walked options in TYPE_COLLECT */
+	char *exec_argv;
+} WalkStacked;
 
 static int isdelimiter(char ch) {
 	int i = 0;
@@ -846,34 +858,6 @@ func_end:
 	return;
 }
 
-static void term_exec_run(Terminal *term, TermExec exec) {
-	if (term->event == E_EVENT_EXEC) {
-		exec(term, term->exec_argc, term->exec_argv);
-	}
-	term->exec_num++;
-}
-
-static int term_push_exec_argv(Terminal *term, const char *argv) {
-	int ret  = -1;
-	if (term->exec_argc + 1 >= MAX_EXEC_ARGC) {
-		goto func_end;
-	}
-	term->exec_argv[term->exec_argc] = argv;
-	term->exec_argc++;
-func_end:
-	return ret;
-}
-
-static int term_pop_exec_argv(Terminal *term) {
-	int ret  = -1;
-	if (term->exec_argc == 0) {
-		goto func_end;
-	}
-	term->exec_argc--;
-	term->exec_argv[term->exec_argc] = NULL;
-func_end:
-	return ret;
-}
 
 static int compare_keyword(const char *target, const char *content) {
 	if (target == NULL || content == NULL) {
@@ -889,7 +873,7 @@ static int compare_keyword(const char *target, const char *content) {
 }
 
 static void term_output_complete_or_help(Terminal *term) {
-	int i = 0, comman_len = 0, overlay = 0, start_pos = 0, end_pos = 0, completed = 0;
+	int i = 0, comman_len = 0, tail_arglen = 0, start_pos = 0, end_pos = 0, completed = 0;
 	int word_width = 0, with_help = 0, rows = 0, cols = 0, words_len = 0, word_num = 0;
 	TermComplete *p_com = NULL;
 	TermArg *p_lastarg = NULL;
@@ -904,37 +888,35 @@ static void term_output_complete_or_help(Terminal *term) {
 			}
 		}
 		if (comman_len > 0) {
-			overlay = 0;
+			tail_arglen = 0;
 			p_lastarg = NULL;
 			if (term->command_args != NULL) {
 				for (p_lastarg = term->command_args; p_lastarg->next != NULL; p_lastarg = p_lastarg->next);
 			}
 			if (p_lastarg && !term->spacetail && term->command_args != NULL) {
-				overlay = strlen(p_lastarg->content);
+				tail_arglen = strlen(p_lastarg->content);
 			}
-			if (overlay > 0) {
-				start_pos = term->num - overlay;
-				end_pos = start_pos + comman_len;
-				if (comman_len > overlay) {
-					/* malloc for complete, command_len - overlay is the size that need expand */
-					tt_buffer_swapto_malloced(&(term->line_command), comman_len - overlay);
-				}
-				if (memcmp(term->line_command.content + start_pos, term->complete->word, comman_len)) {
-					memcpy(term->line_command.content + start_pos, term->complete->word, comman_len);
-					completed = 1;
-				}
-				term->line_command.used += comman_len - overlay;
-				*(term->line_command.content + end_pos) = '\0';
-				if (term->complete->next == NULL) { /* only one match, add SPACE at the end of word */
-					tt_buffer_swapto_malloced(&(term->line_command), 1); /* malloc for complete SPACE */
-					strcat((char *)(term->line_command.content), " ");
-					end_pos += 1;
-					term->line_command.used += 1;
-					completed = 1;
-				}
-				// printf("term->pos %d, start_pos %d, end_pos %d\n", term->pos, start_pos, end_pos);
-				term_refresh(term, end_pos, end_pos, start_pos);
+			start_pos = term->num - tail_arglen;
+			end_pos = start_pos + comman_len;
+			if (comman_len > tail_arglen) {
+				/* malloc for complete, command_len - tail_arglen is the size that need expand */
+				tt_buffer_swapto_malloced(&(term->line_command), comman_len - tail_arglen);
 			}
+			if (memcmp(term->line_command.content + start_pos, term->complete->word, comman_len)) {
+				memcpy(term->line_command.content + start_pos, term->complete->word, comman_len);
+				completed = 1;
+			}
+			term->line_command.used += comman_len - tail_arglen;
+			*(term->line_command.content + end_pos) = '\0';
+			if (term->complete->next == NULL) { /* only one match, add SPACE at the end of word */
+				tt_buffer_swapto_malloced(&(term->line_command), 1); /* malloc for complete SPACE */
+				strcat((char *)(term->line_command.content), " ");
+				end_pos += 1;
+				term->line_command.used += 1;
+				completed = 1;
+			}
+			// printf("term->pos %d, start_pos %d, end_pos %d\n", term->pos, start_pos, end_pos);
+			term_refresh(term, end_pos, end_pos, start_pos);
 		}
 	}
 	if (completed == 0) { /* print help informations */
@@ -1056,14 +1038,6 @@ static void term_output_complete_or_help(Terminal *term) {
 	}
 }
 
-#define MAX_DEEP 32
-
-typedef struct WalkSaved {
-	TermNode *node;
-	TermArg *arg;
-	int repeat;
-} WalkSaved;
-
 static inline TermNode *node_get_children(TermNode *node) {
 	if (node->selector != NULL) { /* is a option in group */
 		return node->selector->children;
@@ -1071,36 +1045,131 @@ static inline TermNode *node_get_children(TermNode *node) {
 	return node->children;
 }
 static inline TermNode *node_get_option(TermNode *node) {
-	if (node->type == TYPE_SELECT) {
-		return node->option;
+	if (node->type != TYPE_SELECT && node->type != TYPE_COLLECT) {
+		return NULL;
 	}
-	return NULL;
+	return node->option;
 }
+static inline TermNode *node_get_unmasked_option(TermNode *node, uint64_t mask) {
+	TermNode *cur = NULL;
+	if (node->selector == NULL || node->selector->type != TYPE_COLLECT) {
+		goto func_end;
+	}
+	for (cur = node->selector->option; cur != NULL; cur = cur->next) {
+		if ((mask & (1 << cur->option_index)) == 0) {
+			break;
+		}
+	}
+func_end:
+	return cur;
+}
+static void term_exec_run(Terminal *term, WalkStacked *stacked, int deep) {
+	int i = 0, j = 0, argc = 0, collect_len = 0;
+	char **argv = NULL;
+	int *argv_alloced = NULL; /* argv is alloced or not */
+	uint64_t checked = 0;
+	TermNode *cur = NULL;
+	
+	term->exec_num++;
+
+	if (term->event != E_EVENT_EXEC) {
+		goto func_end;
+	}
+	/* generate argv */
+	argc = 0;
+	for (i = 0; i < deep + 1; i++) {
+		if (stacked[i].node->type == TYPE_KEY || stacked[i].node->type == TYPE_TEXT) {
+			argc++;
+		}
+	}
+	argv = (char **)malloc(sizeof(char *) * argc);
+	argv_alloced = (int *)malloc(sizeof(int) * argc);
+	memset(argv_alloced, 0x00, sizeof(int) * argc);
+	for (i = 0, j = 0; i < deep + 1; ) {
+		switch (stacked[i].node->type) {
+			case TYPE_TEXT: argv[j] = stacked[i].exec_argv; i++; j++; break;
+			case TYPE_KEY: argv[j] = stacked[i].node->word; i++; j++; break;
+			case TYPE_SELECT: argv[j] = stacked[i + 1].node->word; i += 2; j++; break;
+			case TYPE_COLLECT:
+				checked = stacked[i].checked;
+				collect_len = 0;
+				/* calc collect_len */
+				for (cur = stacked[i].node->option; checked != 0; cur = cur->next) {
+					if (checked & 1) {
+						if (collect_len > 0) {
+							collect_len += 1; /* join with '+' */
+						}
+						collect_len += strlen(cur->word);
+					}
+					checked >>= 1;
+				}
+				argv[j] = malloc(collect_len + 1); /* len + 1 for '\0' */
+				argv_alloced[j] = 1;
+				argv[j][0] = '\0';
+				checked = stacked[i].checked;
+				for (cur = stacked[i].node->option; checked != 0; cur = cur->next) {
+					if (checked & 1) {
+						if (argv[j][0] != '\0') {
+							strcat(argv[j], "+");
+						}
+						strcat(argv[j], cur->word);
+					}
+					checked >>= 1;
+				}
+				i += 2;
+				j++;
+				break;
+			default: ;
+		}
+	}
+
+	/* run exec func */
+	stacked[deep].node->exec(term, argc, (const char **)argv);
+	for (i = 0; i < argc; i++) {
+		if (argv_alloced[i]) {
+			free(argv[i]);
+		}
+	}
+	free(argv_alloced);
+	free(argv);
+func_end:
+	return;
+}
+#define WALK_DEBUG 0
 static void term_walk(Terminal *term) {
 	int match = 0, deep = 0;
-	WalkSaved saved[MAX_DEEP];
+	WalkStacked stacked[MAX_DEEP];
 	TermNode *node = NULL, *next = NULL;
 	TermArg *arg = NULL;
 
-	term->exec_argc = 0;
 	term->exec_num = 0;
 
-	memset(&saved, 0x00, sizeof(WalkSaved));
-	saved[0].node = term->root->children;
-	saved[0].arg = term->command_args;
+	memset(&stacked, 0x00, sizeof(stacked));
+	stacked[0].node = term->root->children;
+	stacked[0].arg = term->command_args;
 
 	/* walk all nodes */
 	while (1) {
-		node = saved[deep].node;
-		arg = saved[deep].arg;
-		// printf("deep:%d, arg:%s node:%s\n", deep, arg ? arg->content : "null", node ? node->word : "null");
+		node = stacked[deep].node;
+		arg = stacked[deep].arg;
+#if WALK_DEBUG
+		printf("deep:%d, arg:%s node:%s\n", deep, arg ? arg->content : "null", node ? node->word : "null");
+#endif
 		match = 0;
 
-		if (node->type == TYPE_SELECT && node_get_option(node) != NULL) { /* process children in selector */
-			saved[deep + 1].node = node_get_option(node);
-			saved[deep + 1].arg = arg;
+		if ((node->type == TYPE_SELECT || node->type == TYPE_COLLECT) && node_get_option(node) != NULL) { /* process children in selector */
+			stacked[deep].walked = 0;
+			stacked[deep].checked = 0;
+			stacked[deep + 1].node = node_get_option(node);
+			stacked[deep + 1].arg = arg;
 			deep++;
 			continue;
+		}
+		if (node->selector != NULL && node->selector->type == TYPE_COLLECT) {
+			stacked[deep - 1].walked |= (1 << node->option_index);
+#if WALK_DEBUG
+			printf("walked: %" PRIu64 ", checked: %" PRIu64 "\n", stacked[deep - 1].walked, stacked[deep - 1].checked);
+#endif
 		}
 
 		switch (node->type) {
@@ -1117,11 +1186,6 @@ static void term_walk(Terminal *term) {
 						if (!term->spacetail) { /* need complete or print hellp */
 							term_complete_add(term, node->word, node->help);
 						}
-						if (match == MATCH_ALL && node->exec != NULL) {
-							term_push_exec_argv(term, arg->content);
-							term_exec_run(term, node->exec);
-							term_pop_exec_argv(term);
-						}
 					}
 				}
 				break;
@@ -1132,43 +1196,81 @@ static void term_walk(Terminal *term) {
 					term_hints_add(term, node->word, node->help);
 					break; /* break switch */
 				}
+				stacked[deep].exec_argv = arg->content;
 				if (arg->next == NULL) {
 					if (!term->spacetail) { /* need complete or print help */
 						term_hints_add(term, node->word, node->help);
-					}
-					if (node->exec != NULL) {
-						term_push_exec_argv(term, arg->content);
-						term_exec_run(term, node->exec);
-						term_pop_exec_argv(term);
 					}
 				}
 				break;
 			default: ;
 		}
-		if (match == MATCH_ALL && arg != NULL && (arg->next || term->spacetail) && node_get_children(node) != NULL) {
-			/* current match, and need check children */
-			term_push_exec_argv(term, arg->content);
-			saved[deep + 1].node = node_get_children(node);
-			saved[deep + 1].arg = arg->next;
-			deep++;
-			continue;
-		}
-		next = node->next;
-		while (next == NULL) {
-			if (node->type == TYPE_SELECT) {
-				term_pop_exec_argv(term);
+#if WALK_DEBUG
+		printf("enter %d %d\n", match == MATCH_ALL, arg != NULL && (arg->next || term->spacetail));
+#endif
+		if (match == MATCH_ALL) {
+			if (node->exec != NULL && arg != NULL) {
+				term_exec_run(term, stacked, deep);
 			}
+			if (arg != NULL && (arg->next || term->spacetail)) {
+				/* current match, and need check children */
+				if (node->selector != NULL) { /* is option in TYPE_SELECT or TYPE_COLLECT */
+					if (node->selector->type == TYPE_SELECT) {
+						stacked[deep - 1].checked |= (1 << node->option_index);
+						if (node->selector->children != NULL) {
+							stacked[deep + 1].node = node->selector->children;
+							stacked[deep + 1].arg = arg->next;
+							deep++;
+							continue;
+						}
+					} else { /* node->selector->type == TYPE_COLLECT */
+						stacked[deep].arg = arg->next; /* match arg->next for another option */
+						stacked[deep - 1].checked |= (1 << node->option_index);
+						stacked[deep - 1].walked = stacked[deep - 1].checked; /* skip checked option while next walk */
+						if (node->selector->children != NULL) {
+							stacked[deep + 1].node = node->selector->children;
+							stacked[deep + 1].arg = arg->next;
+							deep++;
+							continue;
+						}
+					}
+					break;
+				} else {
+					if (node->children != NULL) {
+						stacked[deep].exec_argv = arg->content;
+						stacked[deep + 1].node = node->children;
+						stacked[deep + 1].arg = arg->next;
+						deep++;
+						continue;
+					}
+					break;
+				}
+			}
+		}
+		if (node->selector != NULL && node->selector->type == TYPE_COLLECT) {
+			next = node_get_unmasked_option(node, stacked[deep - 1].walked);
+			/* stacked[deep].arg = arg ? arg->next : NULL; */
+		} else {
+			next = node->next;
+		}
+		while (next == NULL) {
+			/* switch to uncle */
+			memset(&stacked[deep], 0x00, sizeof(WalkStacked));
 			deep--;
 			if (deep < 0) {
 				break;
 			}
-			node = saved[deep].node;
-			next = node->next;
+			node = stacked[deep].node;
+			if (node->selector != NULL && node->selector->type == TYPE_COLLECT) {
+				next = node_get_unmasked_option(node, stacked[deep - 1].walked);
+			} else {
+				next = node->next;
+			}
 		}
 		if (deep < 0) {
 			break;
 		}
-		saved[deep].node = next;
+		stacked[deep].node = next;
 	}
 
 	/* maybe found completion and help info */
@@ -1477,6 +1579,9 @@ static void node_free(TermNode *node) {
 	if (node->help != NULL) {
 		MY_FREE(node->help);
 	}
+	if (node->default_val != NULL) {
+		MY_FREE(node->default_val);
+	}
 	MY_FREE(node);
 }
 
@@ -1530,6 +1635,18 @@ int term_node_child_del(TermNode *parent, const char *word) {
 TermNode *term_node_select_add(TermNode *parent, const char *word) {
 	return term_node_child_add(parent, TYPE_SELECT, word, NULL, NULL);
 }
+TermNode *term_node_collect_add(TermNode *parent, const char *word, const char *default_val) {
+	TermNode *new_node = NULL;
+	new_node = term_node_child_add(parent, TYPE_COLLECT, word, NULL, NULL);
+	if (new_node == NULL) {
+		goto func_end;
+	}
+	if (default_val != NULL) {
+		new_node->default_val = strdup(default_val);
+	}
+func_end:
+	return new_node;
+}
 
 TermNode *term_node_option_add(TermNode *selector, const char *word, const char *help) {
 	TermNode *new_node = NULL, *tail = NULL;
@@ -1547,8 +1664,9 @@ TermNode *term_node_option_add(TermNode *selector, const char *word, const char 
 	new_node->selector = selector;
 	if (selector->option == NULL) {
 		selector->option = new_node;
+		new_node->option_index = 0;
 	} else {
-		for (tail = selector->option; tail->next != NULL; tail = tail->next);
+		for (tail = selector->option, new_node->option_index = 1; tail->next != NULL; tail = tail->next, new_node->option_index++);
 		tail->next = new_node;
 	}
 func_end:

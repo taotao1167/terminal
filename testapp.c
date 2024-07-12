@@ -98,7 +98,15 @@ int main() {
 	selnode = term_node_select_add(testselnode, "sel1");
 	/**/term_node_option_add(selnode, "option1", "help for option1");
 	/**/term_node_option_add(selnode, "option2", "help for option2");
-	/**//**/term_node_child_add(selnode, TYPE_TEXT, "content", "text for all options", cmd_test);
+	/**//**/term_node_child_add(selnode, TYPE_TEXT, "content", "text for all sel1", cmd_test);
+
+	TermNode *testcolnode = NULL, *colnode = NULL;
+	testcolnode = term_node_child_add(root, TYPE_KEY, "testcol", "help for testcol", NULL);
+	colnode = term_node_collect_add(testcolnode, "col1", NULL);
+	/**/term_node_option_add(colnode, "optionA", "help for optionA");
+	/**/term_node_option_add(colnode, "optionB", "help for optionB");
+	/**/term_node_option_add(colnode, "optionC", "help for optionC");
+	/**//**/term_node_child_add(colnode, TYPE_KEY, "abc", "text for all col1", cmd_test);
 
 	TermNode *setnode = NULL, *promptnode = NULL;
 	setnode = term_node_child_add(root, TYPE_KEY, "set", "set Command", NULL);

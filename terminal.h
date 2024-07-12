@@ -12,7 +12,6 @@ extern "C" {
 #endif
 
 #define HISTORY_LENGTH     80
-#define MAX_EXEC_ARGC      32
 
 #define MATCH_NONE         0
 #define MATCH_PART         1
@@ -91,6 +90,8 @@ typedef struct TermNode {
 	NodeType type;
 	char *word;
 	char *help;
+	char *default_val; /* set not NULL for TYPE_COLLECT empty */
+	int option_index; /* option index in selector */
 	struct TermNode *selector; /* option in select will use */
 	struct TermNode *option; /* select will use */
 	struct TermNode *children;
@@ -128,8 +129,6 @@ typedef struct Terminal {
 	TermComplete *complete;
 	TermHits *hints;
 	int exec_num;
-	int exec_argc;
-	const char *exec_argv[MAX_EXEC_ARGC];
 	ssize_t (*read)(struct Terminal *term, void *buf, size_t count);
 	ssize_t (*write)(struct Terminal *term, const void *buf, size_t count);
 	void *userdata; /* set by term_prompt_userdata_set */
@@ -141,6 +140,7 @@ extern TermNode *term_root_create();
 extern TermNode *term_node_child_add(TermNode *parent, NodeType type, const char *word, const char *help, TermExec exec);
 extern int term_node_child_del(TermNode *parent, const char *word);
 extern TermNode *term_node_select_add(TermNode *parent, const char *word);
+extern TermNode *term_node_collect_add(TermNode *parent, const char *word, const char *default_val);
 extern TermNode *term_node_option_add(TermNode *select, const char *word, const char *help);
 extern int term_node_option_del(TermNode *select, const char *word);
 
