@@ -63,15 +63,6 @@ typedef enum TermEvent {
 	E_EVENT_EXEC
 } TermEvent;
 
-typedef struct TermWordHelp {
-	char *word;
-	char *help;
-	struct TermWordHelp *next;
-} TermWordHelp ;
-
-typedef struct TermWordHelp TermComplete;
-typedef struct TermWordHelp TermHits;
-
 typedef enum NodeType {
 	TYPE_UNSET = 0,
 	TYPE_KEY,
@@ -83,53 +74,14 @@ typedef enum NodeType {
 struct Terminal;
 typedef void (* TermExec)(struct Terminal *term, int argc, const char **argv);
 
-typedef struct TermNode {
-	NodeType type;
-	char *word;
-	char *help;
-	uint32_t flags; /* is MULSEL_OPTIONAL if allow TYPE_MULSEL empty */
-	int option_index; /* option index in selector */
-	struct TermNode *selector; /* option in select will use */
-	struct TermNode *option; /* select will use */
-	struct TermNode *children;
-	struct TermNode *next;
-	TermExec exec;
-} TermNode;
+typedef struct TermNode TermNode;
 
 typedef struct TermArg {
 	char *content;
 	struct TermArg *next;
 } TermArg;
 
-typedef struct Terminal {
-    char *init_content;
-    int init_content_offset;
-	TermNode *root; /* a tree */
-	char *prompt;
-	char *default_prompt;
-	unsigned int prompt_color;
-	TTBuffer prefix; /* saved content for multiline " ' \ */
-	TTBuffer line_command;
-	TTBuffer tempbuf; /* for format output */
-	int history_cnt;
-	int history_cur; /* current histroy index */
-	char **history; /* histroy content */
-	char *line; /* term_getline or term_password will use */
-	int pos; /* cursor position */
-	int num; /* length of line_command */
-	int mask; /* set true if need mask */
-	int multiline; /* true if line command end with '\\' or found '\"' or '\'' but not close */
-	int exit_flag; /* set true when need exit term_loop */
-	int spacetail; /* command has space tail or not */
-	TermEvent event;
-	TermArg *command_args;
-	TermComplete *complete;
-	TermHits *hints;
-	int exec_num;
-	ssize_t (*read)(struct Terminal *term, void *buf, size_t count);
-	ssize_t (*write)(struct Terminal *term, const void *buf, size_t count);
-	void *userdata; /* set by term_prompt_userdata_set */
-} Terminal;
+typedef struct Terminal Terminal;
 
 
 extern TermNode *term_root_create();
@@ -141,11 +93,16 @@ extern TermNode *term_node_mulsel_add(TermNode *parent, const char *word, uint32
 extern TermNode *term_node_option_add(TermNode *select, const char *word, const char *help);
 extern int term_node_option_del(TermNode *select, const char *word);
 
+extern TermNode *term_node_dynamic_children(TermNode *parent, void *cb_func);
+extern TermNode *term_node_dynamic_option(TermNode *select, void *cb_func);
+
 extern void term_root_free(TermNode *root);
-extern int term_init(Terminal *term, const char *prompt, TermNode *root, const char *init_content);
+
+extern int term_create(Terminal **_term, const char *prompt, TermNode *root, const char *init_content);
+extern void term_destroy(Terminal *term);
+
 extern int term_root_set(Terminal *term, TermNode *root);
 extern void term_exit(Terminal *term);
-extern void term_deinit(Terminal *term);
 extern int term_loop(Terminal *term);
 extern void term_color_set(Terminal *term, unsigned int color);
 extern int term_prompt_set(Terminal *term, const char *prompt);

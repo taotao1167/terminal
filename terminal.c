@@ -63,6 +63,58 @@
 #define KEY_INSERT (0x18 << 8)
 #define KEY_DELETE (0x19 << 8)
 
+typedef struct TermWordHelp {
+	char *word;
+	char *help;
+	struct TermWordHelp *next;
+} TermWordHelp ;
+
+typedef struct TermWordHelp TermComplete;
+typedef struct TermWordHelp TermHits;
+
+struct TermNode {
+	NodeType type;
+	char *word;
+	char *help;
+	uint32_t flags; /* is MULSEL_OPTIONAL if allow TYPE_MULSEL empty */
+	int option_index; /* option index in selector */
+	struct TermNode *selector; /* option in select will use */
+	struct TermNode *option; /* select will use */
+	struct TermNode *children;
+	struct TermNode *next;
+	TermExec exec;
+};
+
+struct Terminal {
+    char *init_content;
+    int init_content_offset;
+	TermNode *root; /* a tree */
+	char *prompt;
+	char *default_prompt;
+	unsigned int prompt_color;
+	TTBuffer prefix; /* saved content for multiline " ' \ */
+	TTBuffer line_command;
+	TTBuffer tempbuf; /* for format output */
+	int history_cnt;
+	int history_cur; /* current histroy index */
+	char **history; /* histroy content */
+	char *line; /* term_getline or term_password will use */
+	int pos; /* cursor position */
+	int num; /* length of line_command */
+	int mask; /* set true if need mask */
+	int multiline; /* true if line command end with '\\' or found '\"' or '\'' but not close */
+	int exit_flag; /* set true when need exit term_loop */
+	int spacetail; /* command has space tail or not */
+	TermEvent event;
+	TermArg *command_args;
+	TermComplete *complete;
+	TermHits *hints;
+	int exec_num;
+	ssize_t (*read)(struct Terminal *term, void *buf, size_t count);
+	ssize_t (*write)(struct Terminal *term, const void *buf, size_t count);
+	void *userdata; /* set by term_prompt_userdata_set */
+};
+
 typedef struct WalkStacked {
 	TermNode *node;
 	TermArg *arg;
@@ -460,53 +512,6 @@ static ssize_t write_std(Terminal *term, const void *buf, size_t count) {
 	return write(STDOUT_FILENO, buf, count);
 }
 
-int term_init(Terminal *term, const char *prompt, TermNode *root, const char *init_content) {
-	int not_support = 0;
-	char *term_env = NULL;
-
-	if (!isatty(STDIN_FILENO)) {  // input is not from a terminal
-		not_support = 1;
-	} else {
-		term_env = getenv("TERM");
-		if (NULL != term_env) {
-			if (!strcasecmp(term_env, "dumb") || !strcasecmp(term_env, "cons25") ||  !strcasecmp(term_env, "emacs")) {
-				not_support = 1;
-			}
-		}
-	}
-	if (not_support) {
-		printf("not support\n");
-		return -1;
-	}
-
-	memset(term, 0x00, sizeof(Terminal));
-	tt_buffer_init(&(term->line_command));
-	tt_buffer_swapto_malloced(&(term->line_command), 0); /* avoid term->line_command->content is null */
-	tt_buffer_init(&(term->tempbuf));
-	tt_buffer_init(&(term->prefix));
-	tt_buffer_swapto_malloced(&(term->prefix), 0); /* avoid term->frefix->content is null */
-	term->default_prompt = MY_STRDUP(prompt);
-	if (0 != term_prompt_set(term, prompt)) {
-		return -1;
-	}
-	if (init_content != NULL) {
-		term->init_content = MY_STRDUP(init_content);
-		term->init_content_offset = 0;
-		term->read = read_init_content;
-	} else {
-		term->read = read_std;
-	}
-	term->write = write_std;
-	term->root = root;
-	term_prompt_color_set(term, TERM_FGCOLOR_BRIGHT_GREEN | TERM_STYLE_BOLD);
-	return 0;
-}
-
-int term_root_set(Terminal *term, TermNode *root) {
-	term->root = root;
-	return 0;
-}
-
 static void wordhelp_free(struct TermWordHelp **p_head) {
 	TermWordHelp *p_cur = NULL, *p_next = NULL;
 
@@ -522,7 +527,8 @@ static void wordhelp_free(struct TermWordHelp **p_head) {
 	}
 }
 
-void term_deinit(Terminal *term) {
+
+void term_destroy(Terminal *term) {
 	int i = 0;
 	if (term->prompt != NULL) {
 		MY_FREE(term->prompt);
@@ -546,6 +552,67 @@ void term_deinit(Terminal *term) {
 	wordhelp_free(&(term->complete));
 	wordhelp_free(&(term->hints));
 	memset(term, 0x00, sizeof(Terminal));
+	free(term);
+}
+
+int term_create(Terminal **_term, const char *prompt, TermNode *root, const char *init_content) {
+	int ret = -1, not_support = 0;
+	char *term_env = NULL;
+	Terminal *term = NULL;
+
+	if (!isatty(STDIN_FILENO)) {  // input is not from a terminal
+		not_support = 1;
+	} else {
+		term_env = getenv("TERM");
+		if (NULL != term_env) {
+			if (!strcasecmp(term_env, "dumb") || !strcasecmp(term_env, "cons25") ||  !strcasecmp(term_env, "emacs")) {
+				not_support = 1;
+			}
+		}
+	}
+	if (not_support) {
+		printf("not support\n");
+		goto func_end;
+	}
+
+	term = (Terminal *)malloc(sizeof(Terminal));
+	if (term == NULL) {
+		goto func_end;
+	}
+	memset(term, 0x00, sizeof(Terminal));
+	tt_buffer_init(&(term->line_command));
+	tt_buffer_swapto_malloced(&(term->line_command), 0); /* avoid term->line_command->content is null */
+	tt_buffer_init(&(term->tempbuf));
+	tt_buffer_init(&(term->prefix));
+	tt_buffer_swapto_malloced(&(term->prefix), 0); /* avoid term->frefix->content is null */
+	term->default_prompt = MY_STRDUP(prompt);
+	if (0 != term_prompt_set(term, prompt)) {
+		goto func_end;
+	}
+	if (init_content != NULL) {
+		term->init_content = MY_STRDUP(init_content);
+		term->init_content_offset = 0;
+		term->read = read_init_content;
+	} else {
+		term->read = read_std;
+	}
+	term->write = write_std;
+	term->root = root;
+	term_prompt_color_set(term, TERM_FGCOLOR_BRIGHT_GREEN | TERM_STYLE_BOLD);
+	*_term = term;
+	ret = 0;
+func_end:
+	if (ret != 0) {
+		if (term != NULL) {
+			term_destroy(term);
+		}
+	}
+	return ret;
+}
+
+int term_root_set(Terminal *term, TermNode *root) {
+	term->root = root;
+	return 0;
 }
 
 static int term_getkey(Terminal *term) {

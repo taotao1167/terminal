@@ -82,7 +82,7 @@ static void cmd_exit(Terminal *term, int argc, const char **argv) {
 	term_exit(term);
 }
 int main() {
-	Terminal term;
+	Terminal *term;
 	TermNode *root = NULL;
 	root = term_root_create();
 
@@ -104,7 +104,7 @@ int main() {
 	selnode = term_node_select_add(testselnode, "sel1", NULL);
 	/**/term_node_option_add(selnode, "option1", "help for option1");
 	/**/term_node_option_add(selnode, "option2", "help for option2");
-	/**//**/term_node_child_add(selnode, TYPE_TEXT, "content", "text for all sel1", cmd_test);
+	/**//**/term_node_child_add(selnode, TYPE_TEXT, "content", "text for all sel1", cmd_test0);
 
 	TermNode *testcolnode = NULL, *colnode = NULL;
 	testcolnode = term_node_child_add(root, TYPE_KEY, "testcol", "help for testcol", NULL);
@@ -121,11 +121,11 @@ int main() {
 
 	term_node_child_add(root, TYPE_KEY, "exit", "Exit", cmd_exit);
 
-	term_init(&term, "Demo$", root, "print aa\\ bb\\'\\ncc\\\"\\\\\n"/*init_content*/);
+	term_create(&term, "Demo$", root, "print aa\\ bb\\'\\ncc\\\"\\\\\n"/*init_content*/);
 	// term_init(&term, "Demo$", root, NULL);
-	term_userdata_set(&term, "hello");
-	term_loop(&term); /* will block */
+	term_userdata_set(term, "hello");
+	term_loop(term); /* will block */
 	term_root_free(root);
-	term_deinit(&term);
+	term_destroy(term);
 	return 0;
 }
