@@ -1,6 +1,7 @@
 #ifndef __TERMINAL_H__
 #define __TERMINAL_H__
 
+#include <stdint.h>
 #include <stdarg.h>
 #if defined(_WIN32)
 #define ssize_t size_t
@@ -10,12 +11,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#define HISTORY_LENGTH     80
-
-#define MATCH_NONE         0
-#define MATCH_PART         1
-#define MATCH_ALL          2
 
 #define TERM_FGCOLOR_DEFAULT         0
 #define TERM_FGCOLOR_BLACK           30
@@ -57,7 +52,9 @@ extern "C" {
 #define TERM_STYLE_UNDERSCORE        0x020000
 #define TERM_STYLE_BLINKING          0x040000
 #define TERM_STYLE_INVERSE           0x080000
-#define TERM_COLOR_DEFAULT          TERM_FGCOLOR_DEFAULT | TERM_BGCOLOR_DEFAULT
+#define TERM_COLOR_DEFAULT           TERM_FGCOLOR_DEFAULT | TERM_BGCOLOR_DEFAULT
+
+#define MULSEL_OPTIONAL              (1 << 0)
 
 typedef enum TermEvent {
 	E_EVENT_NONE,
@@ -80,7 +77,7 @@ typedef enum NodeType {
 	TYPE_KEY,
 	TYPE_TEXT,
 	TYPE_SELECT,
-	TYPE_COLLECT,
+	TYPE_MULSEL,
 } NodeType;
 
 struct Terminal;
@@ -90,7 +87,7 @@ typedef struct TermNode {
 	NodeType type;
 	char *word;
 	char *help;
-	char *default_val; /* set not NULL for TYPE_COLLECT empty */
+	uint32_t flags; /* is MULSEL_OPTIONAL if allow TYPE_MULSEL empty */
 	int option_index; /* option index in selector */
 	struct TermNode *selector; /* option in select will use */
 	struct TermNode *option; /* select will use */
@@ -111,9 +108,9 @@ typedef struct Terminal {
 	char *prompt;
 	char *default_prompt;
 	unsigned int prompt_color;
-	TT_BUFFER prefix; /* saved content for multiline " ' \ */
-	TT_BUFFER line_command;
-	TT_BUFFER tempbuf; /* for format output */
+	TTBuffer prefix; /* saved content for multiline " ' \ */
+	TTBuffer line_command;
+	TTBuffer tempbuf; /* for format output */
 	int history_cnt;
 	int history_cur; /* current histroy index */
 	char **history; /* histroy content */
@@ -139,8 +136,8 @@ extern TermNode *term_root_create();
 
 extern TermNode *term_node_child_add(TermNode *parent, NodeType type, const char *word, const char *help, TermExec exec);
 extern int term_node_child_del(TermNode *parent, const char *word);
-extern TermNode *term_node_select_add(TermNode *parent, const char *word);
-extern TermNode *term_node_collect_add(TermNode *parent, const char *word, const char *default_val);
+extern TermNode *term_node_select_add(TermNode *parent, const char *word, TermExec exec);
+extern TermNode *term_node_mulsel_add(TermNode *parent, const char *word, uint32_t flags, TermExec exec);
 extern TermNode *term_node_option_add(TermNode *select, const char *word, const char *help);
 extern int term_node_option_del(TermNode *select, const char *word);
 

@@ -22,7 +22,7 @@
 #define INIT_BUFFER_SPACE 1024
 #endif
 
-int tt_buffer_init(TT_BUFFER *buffer) {
+int tt_buffer_init(TTBuffer *buffer) {
 	if (buffer == NULL) {
 		return -1;
 	}
@@ -33,7 +33,7 @@ int tt_buffer_init(TT_BUFFER *buffer) {
 	return 0;
 }
 
-int tt_buffer_free(TT_BUFFER *buffer) {
+int tt_buffer_free(TTBuffer *buffer) {
 	if (buffer == NULL) {
 		return -1;
 	}
@@ -49,7 +49,7 @@ int tt_buffer_free(TT_BUFFER *buffer) {
 	return 0;
 }
 
-int tt_buffer_empty(TT_BUFFER *buffer) {
+int tt_buffer_empty(TTBuffer *buffer) {
 	if (buffer->content != NULL) {
 		*(buffer->content) = '\0';
 	}
@@ -57,7 +57,7 @@ int tt_buffer_empty(TT_BUFFER *buffer) {
 	return 0;
 }
 
-int tt_buffer_swapto_malloced(TT_BUFFER *buffer, size_t content_len) {
+int tt_buffer_swapto_malloced(TTBuffer *buffer, size_t content_len) {
 	unsigned char *buf_bak = NULL;
 	if (!(buffer->is_malloced)) {
 		/* malloc size INIT_BUFFER_SPACE */
@@ -151,7 +151,7 @@ DDD
 ret: 5
 E
 */
-int tt_buffer_vprintf(TT_BUFFER *buffer, const char *format, va_list args) {
+int tt_buffer_vprintf(TTBuffer *buffer, const char *format, va_list args) {
 	int rc = 0;
 	va_list args_bk;
 	va_copy(args_bk, args);
@@ -205,7 +205,7 @@ int tt_buffer_vprintf(TT_BUFFER *buffer, const char *format, va_list args) {
 	return rc;
 }
 
-int tt_buffer_printf(TT_BUFFER *buffer, const char *format, ...) {
+int tt_buffer_printf(TTBuffer *buffer, const char *format, ...) {
 	int rc = 0;
 	va_list args;
 	if (buffer == NULL || format == NULL) {
@@ -217,7 +217,7 @@ int tt_buffer_printf(TT_BUFFER *buffer, const char *format, ...) {
 	return rc;
 }
 
-int tt_buffer_write(TT_BUFFER *buffer, const void *content, size_t content_len) {
+int tt_buffer_write(TTBuffer *buffer, const void *content, size_t content_len) {
 	if (buffer == NULL || content == NULL) {
 		return -1;
 	}
@@ -244,7 +244,7 @@ int tt_buffer_write(TT_BUFFER *buffer, const void *content, size_t content_len) 
 	return 0;
 }
 
-int tt_buffer_no_copy(TT_BUFFER *buffer, void *content, size_t used, size_t space, int is_malloced) {
+int tt_buffer_no_copy(TTBuffer *buffer, void *content, size_t used, size_t space, int is_malloced) {
 	int ret = 0;
 	if (buffer == NULL || content == NULL) {
 		return -1;
@@ -271,7 +271,7 @@ int tt_buffer_no_copy(TT_BUFFER *buffer, void *content, size_t used, size_t spac
 #if 0 /* for module test */
 int main() {
 	int i = 0;
-	TT_BUFFER buffer;
+	TTBuffer buffer;
 	tt_buffer_init(&buffer);
 
 	for (i = 0; i < INIT_BUFFER_SPACE - 1; i++) {

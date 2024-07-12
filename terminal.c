@@ -30,6 +30,13 @@
 #include "terminal.h"
 #endif /* end of #ifndef __TERMINAL_H__ */
 
+#define HISTORY_LENGTH     20
+#define WALK_MAX_DEEP      32
+
+#define MATCH_NONE         0
+#define MATCH_PART         1
+#define MATCH_ALL          2
+
 #define MY_MALLOC(x) malloc((x))
 #define MY_FREE(x) free((x))
 #define MY_REALLOC(x, y) realloc((x), (y))
@@ -56,13 +63,11 @@
 #define KEY_INSERT (0x18 << 8)
 #define KEY_DELETE (0x19 << 8)
 
-#define MAX_DEEP 32
-
 typedef struct WalkStacked {
 	TermNode *node;
 	TermArg *arg;
-	uint64_t checked; /* checked options in TYPE_COLLECT */
-	uint64_t walked; /* walked options in TYPE_COLLECT */
+	uint64_t checked; /* checked options in TYPE_MULSEL */
+	uint64_t walked; /* walked options in TYPE_MULSEL */
 	char *exec_argv;
 } WalkStacked;
 
@@ -123,7 +128,7 @@ static int term_split_args(Terminal *term) {
 	int ret = 0;
 	const char *start = NULL, *end = NULL;
 	TermArg *p_new = NULL, *p_tail = NULL;
-	TT_BUFFER command_buf, arg_buf;
+	TTBuffer command_buf, arg_buf;
 	char in_quot = '\0';
 	int backslash_tail = 0, eof = 0;
 
@@ -873,21 +878,21 @@ static int compare_keyword(const char *target, const char *content) {
 }
 
 static void term_output_complete_or_help(Terminal *term) {
-	int i = 0, comman_len = 0, tail_arglen = 0, start_pos = 0, end_pos = 0, completed = 0;
+	int i = 0, common_len = 0, tail_arglen = 0, start_pos = 0, end_pos = 0, completed = 0;
 	int word_width = 0, with_help = 0, rows = 0, cols = 0, words_len = 0, word_num = 0;
 	TermComplete *p_com = NULL;
 	TermArg *p_lastarg = NULL;
 	int executable = (term->exec_num == 1);
 
 	if (term->complete != NULL) {
-		comman_len = (int)strlen(term->complete->word);
+		common_len = (int)strlen(term->complete->word);
 		// find common string for auto complete
-		for (p_com = term->complete->next; (p_com != NULL) && (comman_len > 0); p_com = p_com->next) {
-			while ((comman_len > 0) && strncasecmp(term->complete->word, p_com->word, comman_len)) {
-				comman_len--;
+		for (p_com = term->complete->next; (p_com != NULL) && (common_len > 0); p_com = p_com->next) {
+			while ((common_len > 0) && strncasecmp(term->complete->word, p_com->word, common_len)) {
+				common_len--;
 			}
 		}
-		if (comman_len > 0) {
+		if (common_len > 0) {
 			tail_arglen = 0;
 			p_lastarg = NULL;
 			if (term->command_args != NULL) {
@@ -897,16 +902,16 @@ static void term_output_complete_or_help(Terminal *term) {
 				tail_arglen = strlen(p_lastarg->content);
 			}
 			start_pos = term->num - tail_arglen;
-			end_pos = start_pos + comman_len;
-			if (comman_len > tail_arglen) {
+			end_pos = start_pos + common_len;
+			if (common_len > tail_arglen) {
 				/* malloc for complete, command_len - tail_arglen is the size that need expand */
-				tt_buffer_swapto_malloced(&(term->line_command), comman_len - tail_arglen);
+				tt_buffer_swapto_malloced(&(term->line_command), common_len - tail_arglen);
 			}
-			if (memcmp(term->line_command.content + start_pos, term->complete->word, comman_len)) {
-				memcpy(term->line_command.content + start_pos, term->complete->word, comman_len);
+			if (memcmp(term->line_command.content + start_pos, term->complete->word, common_len)) {
+				memcpy(term->line_command.content + start_pos, term->complete->word, common_len);
 				completed = 1;
 			}
-			term->line_command.used += comman_len - tail_arglen;
+			term->line_command.used += common_len - tail_arglen;
 			*(term->line_command.content + end_pos) = '\0';
 			if (term->complete->next == NULL) { /* only one match, add SPACE at the end of word */
 				tt_buffer_swapto_malloced(&(term->line_command), 1); /* malloc for complete SPACE */
@@ -938,121 +943,113 @@ static void term_output_complete_or_help(Terminal *term) {
 				word_width = strlen(p_com->word);
 			}
 		}
-		if (word_width > 0) {
-			term_printf_inner(term, "\n");
-			if (with_help) { /* print word and help line by line */
-				for (p_com = term->complete; p_com != NULL; p_com = p_com->next) {
-					term_color_set(term, TERM_STYLE_BOLD);
-					term_printf_inner(term, "%s", p_com->word);
-					term_color_set(term, TERM_COLOR_DEFAULT);
-					if (p_com->help != NULL) {
-						term_printf_inner(term, "%*s	 %s\n", word_width - strlen(p_com->word), "", p_com->help);
-					} else {
-						term_printf_inner(term, "\n"); /* show word only if help is NULL */
-					}
+		term_printf_inner(term, "\n");
+		if (with_help) { /* print word and help line by line */
+			for (p_com = term->complete; p_com != NULL; p_com = p_com->next) {
+				term_color_set(term, TERM_STYLE_BOLD);
+				term_printf_inner(term, "%s", p_com->word);
+				term_color_set(term, TERM_COLOR_DEFAULT);
+				if (p_com->help != NULL) {
+					term_printf_inner(term, "%*s	 %s\n", word_width - strlen(p_com->word), "", p_com->help);
+				} else {
+					term_printf_inner(term, "\n"); /* show word only if help is NULL */
 				}
-				for (p_com = term->hints; p_com != NULL; p_com = p_com->next) {
-					term_color_set(term, TERM_STYLE_UNDERSCORE);
-					term_printf_inner(term, "%s", p_com->word);
-					term_color_set(term, TERM_COLOR_DEFAULT);
-					if (p_com->help != NULL) {
-						term_printf_inner(term, "%*s	 %s\n", word_width - strlen(p_com->word), "", p_com->help);
-					} else {
-						term_printf_inner(term, "\n");
-					}
+			}
+			for (p_com = term->hints; p_com != NULL; p_com = p_com->next) {
+				term_color_set(term, TERM_STYLE_UNDERSCORE);
+				term_printf_inner(term, "%s", p_com->word);
+				term_color_set(term, TERM_COLOR_DEFAULT);
+				if (p_com->help != NULL) {
+					term_printf_inner(term, "%*s	 %s\n", word_width - strlen(p_com->word), "", p_com->help);
+				} else {
+					term_printf_inner(term, "\n");
 				}
-			} else { /* only show words */
-				term_screen_get(term, &cols, &rows);
-				words_len = 0;
+			}
+		} else { /* only show words */
+			term_screen_get(term, &cols, &rows);
+			words_len = 0;
+			i = 0;
+			for (p_com = term->complete; p_com != NULL; p_com = p_com->next, i++) {
+				if (i != 0) {
+					words_len += 2;
+				}
+				words_len += strlen(p_com->word);
+			}
+			for (p_com = term->hints; p_com != NULL; p_com = p_com->next, i++) {
+				if (i != 0) {
+					words_len += 2;
+				}
+				words_len += strlen(p_com->word);
+			}
+			if (words_len <= cols) {
 				i = 0;
 				for (p_com = term->complete; p_com != NULL; p_com = p_com->next, i++) {
 					if (i != 0) {
-						words_len += 2;
+						term_printf_inner(term, "  ");
 					}
-					words_len += strlen(p_com->word);
+					term_color_set(term, TERM_STYLE_BOLD);
+					term_printf_inner(term, "%s", p_com->word);
+					term_color_set(term, TERM_COLOR_DEFAULT);
 				}
 				for (p_com = term->hints; p_com != NULL; p_com = p_com->next, i++) {
 					if (i != 0) {
-						words_len += 2;
+						term_printf_inner(term, "  ");
 					}
-					words_len += strlen(p_com->word);
+					term_color_set(term, TERM_STYLE_UNDERSCORE);
+					term_printf_inner(term, "%s", p_com->word);
+					term_color_set(term, TERM_COLOR_DEFAULT);
 				}
-				if (words_len <= cols) {
-					i = 0;
-					for (p_com = term->complete; p_com != NULL; p_com = p_com->next, i++) {
-						if (i != 0) {
-							term_printf_inner(term, "  ");
-						}
-						term_color_set(term, TERM_STYLE_BOLD);
-						term_printf_inner(term, "%s", p_com->word);
-						term_color_set(term, TERM_COLOR_DEFAULT);
-					}
-					for (p_com = term->hints; p_com != NULL; p_com = p_com->next, i++) {
-						if (i != 0) {
-							term_printf_inner(term, "  ");
-						}
-						term_color_set(term, TERM_STYLE_UNDERSCORE);
-						term_printf_inner(term, "%s", p_com->word);
-						term_color_set(term, TERM_COLOR_DEFAULT);
-					}
+				if (i != 0) {
 					term_printf_inner(term, "\n");
-				} else { /* print word as a table */
-					word_num = ((cols - word_width) / (word_width + 2)) + 1;
-					i = 0;
-					for (p_com = term->complete; p_com != NULL; p_com = p_com->next, i++) {
-						if (i % word_num == 0) {
-							term_printf_inner(term, "%s", i ? "\n" : "");
-						} else {
-							term_printf_inner(term, "  ");
-						}
-						term_color_set(term, TERM_STYLE_BOLD);
-						term_printf_inner(term, "%s", p_com->word);
-						term_color_set(term, TERM_COLOR_DEFAULT);
-						term_printf_inner(term, "%*s", word_width - strlen(p_com->word), "");
+				}
+			} else { /* print word as a table */
+				word_num = ((cols - word_width) / (word_width + 2)) + 1;
+				i = 0;
+				for (p_com = term->complete; p_com != NULL; p_com = p_com->next, i++) {
+					if (i % word_num == 0) {
+						term_printf_inner(term, "%s", i ? "\n" : "");
+					} else {
+						term_printf_inner(term, "  ");
 					}
-					for (p_com = term->hints; p_com != NULL; p_com = p_com->next, i++) {
-						if (i % word_num == 0) {
-							term_printf_inner(term, "%s", i ? "\n" : "");
-						} else {
-							term_printf_inner(term, "  ");
-						}
-						term_color_set(term, TERM_STYLE_UNDERSCORE);
-						term_printf_inner(term, "%s", p_com->word);
-						term_color_set(term, TERM_COLOR_DEFAULT);
-						term_printf_inner(term, "%*s", word_width - strlen(p_com->word), "");
+					term_color_set(term, TERM_STYLE_BOLD);
+					term_printf_inner(term, "%s", p_com->word);
+					term_color_set(term, TERM_COLOR_DEFAULT);
+					term_printf_inner(term, "%*s", word_width - strlen(p_com->word), "");
+				}
+				for (p_com = term->hints; p_com != NULL; p_com = p_com->next, i++) {
+					if (i % word_num == 0) {
+						term_printf_inner(term, "%s", i ? "\n" : "");
+					} else {
+						term_printf_inner(term, "  ");
 					}
+					term_color_set(term, TERM_STYLE_UNDERSCORE);
+					term_printf_inner(term, "%s", p_com->word);
+					term_color_set(term, TERM_COLOR_DEFAULT);
+					term_printf_inner(term, "%*s", word_width - strlen(p_com->word), "");
+				}
+				if (i != 0) {
 					term_printf_inner(term, "\n");
 				}
 			}
-			if (executable) {
-				term_printf_inner(term, "<CR>\n");
-			}
-			term_print_prompt(term);
-			// printf("term->pos %d, line_command %d\n", term->pos, strlen((char *)(term->line_command.content)));
-			term_refresh(term, strlen((char *)(term->line_command.content)), strlen((char *)(term->line_command.content)), 0);
-		} else if (executable) {
-			term_printf_inner(term, "\n<CR>\n");
-			term_print_prompt(term);
-			term_refresh(term, strlen((char *)(term->line_command.content)), strlen((char *)(term->line_command.content)), 0);
 		}
+		if (executable) {
+			term_printf_inner(term, "<CR>\n");
+		}
+		term_print_prompt(term);
+		// printf("term->pos %d, line_command %d\n", term->pos, strlen((char *)(term->line_command.content)));
+		term_refresh(term, strlen((char *)(term->line_command.content)), strlen((char *)(term->line_command.content)), 0);
 	}
 }
 
-static inline TermNode *node_get_children(TermNode *node) {
-	if (node->selector != NULL) { /* is a option in group */
-		return node->selector->children;
-	}
-	return node->children;
-}
-static inline TermNode *node_get_option(TermNode *node) {
-	if (node->type != TYPE_SELECT && node->type != TYPE_COLLECT) {
+static TermNode *node_get_option(TermNode *node) {
+	if (node->type != TYPE_SELECT && node->type != TYPE_MULSEL) {
 		return NULL;
 	}
 	return node->option;
 }
-static inline TermNode *node_get_unmasked_option(TermNode *node, uint64_t mask) {
+static TermNode *node_get_unmasked_option(TermNode *node, uint64_t mask) {
 	TermNode *cur = NULL;
-	if (node->selector == NULL || node->selector->type != TYPE_COLLECT) {
+	if (node->selector == NULL || node->selector->type != TYPE_MULSEL) {
 		goto func_end;
 	}
 	for (cur = node->selector->option; cur != NULL; cur = cur->next) {
@@ -1063,8 +1060,14 @@ static inline TermNode *node_get_unmasked_option(TermNode *node, uint64_t mask) 
 func_end:
 	return cur;
 }
+static TermExec node_executable(TermNode *node) {
+	if (node->selector != NULL && (node->selector->type == TYPE_SELECT || node->selector->type == TYPE_MULSEL)) {
+		return node->selector->exec;
+	}
+	return node->exec;
+}
 static void term_exec_run(Terminal *term, WalkStacked *stacked, int deep) {
-	int i = 0, j = 0, argc = 0, collect_len = 0;
+	int i = 0, j = 0, argc = 0, mulsel_len = 0;
 	char **argv = NULL;
 	int *argv_alloced = NULL; /* argv is alloced or not */
 	uint64_t checked = 0;
@@ -1089,21 +1092,22 @@ static void term_exec_run(Terminal *term, WalkStacked *stacked, int deep) {
 		switch (stacked[i].node->type) {
 			case TYPE_TEXT: argv[j] = stacked[i].exec_argv; i++; j++; break;
 			case TYPE_KEY: argv[j] = stacked[i].node->word; i++; j++; break;
-			case TYPE_SELECT: argv[j] = stacked[i + 1].node->word; i += 2; j++; break;
-			case TYPE_COLLECT:
+			case TYPE_SELECT: argv[j] = stacked[i + 1].node->word; i += 2; j++; break; /* += 2 to skip options */
+			case TYPE_MULSEL:
+				/* calc mulsel_len */
 				checked = stacked[i].checked;
-				collect_len = 0;
-				/* calc collect_len */
-				for (cur = stacked[i].node->option; checked != 0; cur = cur->next) {
+				for (mulsel_len = 0, cur = stacked[i].node->option; checked != 0; cur = cur->next) {
 					if (checked & 1) {
-						if (collect_len > 0) {
-							collect_len += 1; /* join with '+' */
+						if (mulsel_len > 0) {
+							mulsel_len += 1; /* join with '+' */
 						}
-						collect_len += strlen(cur->word);
+						mulsel_len += strlen(cur->word);
 					}
 					checked >>= 1;
 				}
-				argv[j] = malloc(collect_len + 1); /* len + 1 for '\0' */
+
+				/* join */
+				argv[j] = malloc(mulsel_len + 1); /* len + 1 for '\0' */
 				argv_alloced[j] = 1;
 				argv[j][0] = '\0';
 				checked = stacked[i].checked;
@@ -1116,7 +1120,7 @@ static void term_exec_run(Terminal *term, WalkStacked *stacked, int deep) {
 					}
 					checked >>= 1;
 				}
-				i += 2;
+				i += 2; /* skip options */
 				j++;
 				break;
 			default: ;
@@ -1124,7 +1128,8 @@ static void term_exec_run(Terminal *term, WalkStacked *stacked, int deep) {
 	}
 
 	/* run exec func */
-	stacked[deep].node->exec(term, argc, (const char **)argv);
+	node_executable(stacked[deep].node)(term, argc, (const char **)argv);
+
 	for (i = 0; i < argc; i++) {
 		if (argv_alloced[i]) {
 			free(argv[i]);
@@ -1138,7 +1143,7 @@ func_end:
 #define WALK_DEBUG 0
 static void term_walk(Terminal *term) {
 	int match = 0, deep = 0;
-	WalkStacked stacked[MAX_DEEP];
+	WalkStacked stacked[WALK_MAX_DEEP];
 	TermNode *node = NULL, *next = NULL;
 	TermArg *arg = NULL;
 
@@ -1153,11 +1158,11 @@ static void term_walk(Terminal *term) {
 		node = stacked[deep].node;
 		arg = stacked[deep].arg;
 #if WALK_DEBUG
-		printf("deep:%d, arg:%s node:%s\n", deep, arg ? arg->content : "null", node ? node->word : "null");
+		printf("deep:%d, arg:%s =? %s\n", deep, arg ? arg->content : "null", node ? node->word : "null");
 #endif
-		match = 0;
+		match = MATCH_NONE;
 
-		if ((node->type == TYPE_SELECT || node->type == TYPE_COLLECT) && node_get_option(node) != NULL) { /* process children in selector */
+		if ((node->type == TYPE_SELECT || node->type == TYPE_MULSEL) && node_get_option(node) != NULL) { /* process children in selector */
 			stacked[deep].walked = 0;
 			stacked[deep].checked = 0;
 			stacked[deep + 1].node = node_get_option(node);
@@ -1165,11 +1170,8 @@ static void term_walk(Terminal *term) {
 			deep++;
 			continue;
 		}
-		if (node->selector != NULL && node->selector->type == TYPE_COLLECT) {
+		if (node->selector != NULL && node->selector->type == TYPE_MULSEL) {
 			stacked[deep - 1].walked |= (1 << node->option_index);
-#if WALK_DEBUG
-			printf("walked: %" PRIu64 ", checked: %" PRIu64 "\n", stacked[deep - 1].walked, stacked[deep - 1].checked);
-#endif
 		}
 
 		switch (node->type) {
@@ -1206,26 +1208,27 @@ static void term_walk(Terminal *term) {
 			default: ;
 		}
 #if WALK_DEBUG
-		printf("enter %d %d\n", match == MATCH_ALL, arg != NULL && (arg->next || term->spacetail));
+		printf("match %d %d\n", match, arg != NULL && (arg->next || term->spacetail));
 #endif
-		if (match == MATCH_ALL) {
-			if (node->exec != NULL && arg != NULL) {
+		if (match == MATCH_ALL && arg != NULL) {
+			if (node->selector != NULL && node->selector->type == TYPE_MULSEL) {
+				stacked[deep - 1].checked |= (1 << node->option_index);
+			}
+			if (node_executable(node) != NULL && arg->next == NULL) {
 				term_exec_run(term, stacked, deep);
 			}
-			if (arg != NULL && (arg->next || term->spacetail)) {
+			if (arg->next || term->spacetail) {
 				/* current match, and need check children */
-				if (node->selector != NULL) { /* is option in TYPE_SELECT or TYPE_COLLECT */
+				if (node->selector != NULL) { /* is option in TYPE_SELECT or TYPE_MULSEL */
 					if (node->selector->type == TYPE_SELECT) {
-						stacked[deep - 1].checked |= (1 << node->option_index);
 						if (node->selector->children != NULL) {
 							stacked[deep + 1].node = node->selector->children;
 							stacked[deep + 1].arg = arg->next;
 							deep++;
 							continue;
 						}
-					} else { /* node->selector->type == TYPE_COLLECT */
+					} else { /* node->selector->type == TYPE_MULSEL */
 						stacked[deep].arg = arg->next; /* match arg->next for another option */
-						stacked[deep - 1].checked |= (1 << node->option_index);
 						stacked[deep - 1].walked = stacked[deep - 1].checked; /* skip checked option while next walk */
 						if (node->selector->children != NULL) {
 							stacked[deep + 1].node = node->selector->children;
@@ -1246,10 +1249,20 @@ static void term_walk(Terminal *term) {
 					break;
 				}
 			}
+		} else {
+			if (node->selector != NULL && node->selector->type == TYPE_MULSEL) {
+				next = node_get_unmasked_option(node, stacked[deep - 1].walked);
+				if (next == NULL && (node->selector->flags & MULSEL_OPTIONAL) && stacked[deep - 1].checked == 0 && node->selector->children != NULL) {
+					/* all option walked but nothing match */
+					stacked[deep + 1].node = node->selector->children;
+					stacked[deep + 1].arg = arg;
+					deep++;
+					continue;
+				}
+			}
 		}
-		if (node->selector != NULL && node->selector->type == TYPE_COLLECT) {
+		if (node->selector != NULL && node->selector->type == TYPE_MULSEL) {
 			next = node_get_unmasked_option(node, stacked[deep - 1].walked);
-			/* stacked[deep].arg = arg ? arg->next : NULL; */
 		} else {
 			next = node->next;
 		}
@@ -1261,7 +1274,7 @@ static void term_walk(Terminal *term) {
 				break;
 			}
 			node = stacked[deep].node;
-			if (node->selector != NULL && node->selector->type == TYPE_COLLECT) {
+			if (node->selector != NULL && node->selector->type == TYPE_MULSEL) { /* one option in mulsel walked */
 				next = node_get_unmasked_option(node, stacked[deep - 1].walked);
 			} else {
 				next = node->next;
@@ -1272,6 +1285,7 @@ static void term_walk(Terminal *term) {
 		}
 		stacked[deep].node = next;
 	}
+	/* all nodes walked */
 
 	/* maybe found completion and help info */
 	if (term->event == E_EVENT_COMPLETE) {
@@ -1579,9 +1593,6 @@ static void node_free(TermNode *node) {
 	if (node->help != NULL) {
 		MY_FREE(node->help);
 	}
-	if (node->default_val != NULL) {
-		MY_FREE(node->default_val);
-	}
 	MY_FREE(node);
 }
 
@@ -1632,18 +1643,16 @@ int term_node_child_del(TermNode *parent, const char *word) {
 	return !found;
 }
 
-TermNode *term_node_select_add(TermNode *parent, const char *word) {
-	return term_node_child_add(parent, TYPE_SELECT, word, NULL, NULL);
+TermNode *term_node_select_add(TermNode *parent, const char *word, TermExec exec) {
+	return term_node_child_add(parent, TYPE_SELECT, word, NULL, exec);
 }
-TermNode *term_node_collect_add(TermNode *parent, const char *word, const char *default_val) {
+TermNode *term_node_mulsel_add(TermNode *parent, const char *word, uint32_t flags, TermExec exec) {
 	TermNode *new_node = NULL;
-	new_node = term_node_child_add(parent, TYPE_COLLECT, word, NULL, NULL);
+	new_node = term_node_child_add(parent, TYPE_MULSEL, word, NULL, exec);
 	if (new_node == NULL) {
 		goto func_end;
 	}
-	if (default_val != NULL) {
-		new_node->default_val = strdup(default_val);
-	}
+	new_node->flags = flags;
 func_end:
 	return new_node;
 }

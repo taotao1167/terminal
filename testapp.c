@@ -65,10 +65,16 @@ static void cmd_printasync(Terminal *term, int argc, const char **argv) {
 	pthread_create(&task_id, NULL, thread_func, term);
 	pthread_detach(task_id);
 }
-static void cmd_test(Terminal *term, int argc, const char **argv) {
+static void cmd_test0(Terminal *term, int argc, const char **argv) {
 	int i = 0;
 	for (i = 0; i < argc; i++) {
-		printf("argv[%d]: %s\n", i, argv[i]);
+		printf("%s argv[%d]: %s\n", __func__, i, argv[i]);
+	}
+}
+static void cmd_test1(Terminal *term, int argc, const char **argv) {
+	int i = 0;
+	for (i = 0; i < argc; i++) {
+		printf("%s argv[%d]: %s\n", __func__, i, argv[i]);
 	}
 }
 static void cmd_exit(Terminal *term, int argc, const char **argv) {
@@ -95,18 +101,18 @@ int main() {
 
 	TermNode *testselnode = NULL, *selnode = NULL;
 	testselnode = term_node_child_add(root, TYPE_KEY, "testsel", "help for testsel", NULL);
-	selnode = term_node_select_add(testselnode, "sel1");
+	selnode = term_node_select_add(testselnode, "sel1", NULL);
 	/**/term_node_option_add(selnode, "option1", "help for option1");
 	/**/term_node_option_add(selnode, "option2", "help for option2");
 	/**//**/term_node_child_add(selnode, TYPE_TEXT, "content", "text for all sel1", cmd_test);
 
 	TermNode *testcolnode = NULL, *colnode = NULL;
 	testcolnode = term_node_child_add(root, TYPE_KEY, "testcol", "help for testcol", NULL);
-	colnode = term_node_collect_add(testcolnode, "col1", NULL);
+	colnode = term_node_mulsel_add(testcolnode, "col1", MULSEL_OPTIONAL, cmd_test0);
 	/**/term_node_option_add(colnode, "optionA", "help for optionA");
 	/**/term_node_option_add(colnode, "optionB", "help for optionB");
 	/**/term_node_option_add(colnode, "optionC", "help for optionC");
-	/**//**/term_node_child_add(colnode, TYPE_KEY, "abc", "text for all col1", cmd_test);
+	/**//**/term_node_child_add(colnode, TYPE_KEY, "abc", "text for all col1", cmd_test1);
 
 	TermNode *setnode = NULL, *promptnode = NULL;
 	setnode = term_node_child_add(root, TYPE_KEY, "set", "set Command", NULL);
