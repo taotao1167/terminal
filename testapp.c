@@ -81,6 +81,22 @@ static void cmd_exit(Terminal *term, int argc, const char **argv) {
 	printf("userdata \"%s\"\n", (char *)term_userdata_get(term));
 	term_exit(term);
 }
+static void cmd_dyn_child(void *userdata, char ***word, char ***help, int *num) {
+	int i = 0;
+	*num = 3;
+	*word = (char **)malloc(sizeof(char *) * 3);
+	for (i = 0; i < *num; i++) {
+		(*word)[i] = (char *)malloc(16);
+		sprintf((*word)[i], "%02d", i);
+	}
+#if 1
+	*help = (char **)malloc(sizeof(char *) * 3);
+	for (i = 0; i < *num; i++) {
+		(*help)[i] = (char *)malloc(32);
+		sprintf((*help)[i], "help of %02d", i);
+	}
+#endif
+}
 int main() {
 	Terminal *term;
 	TermNode *root = NULL;
@@ -113,6 +129,11 @@ int main() {
 	/**/term_node_option_add(colnode, "optionB", "help for optionB");
 	/**/term_node_option_add(colnode, "optionC", "help for optionC");
 	/**//**/term_node_child_add(colnode, TYPE_KEY, "abc", "text for all col1", cmd_test1);
+
+	TermNode *testdynnode = NULL, *dyngrpnode = NULL;
+	testdynnode = term_node_child_add(root, TYPE_KEY, "testdyn", "help for testdyn", NULL);
+	dyngrpnode = term_node_select_add(testdynnode, "dyn1", cmd_test0);
+	/**/term_node_dynamic_option(dyngrpnode, cmd_dyn_child, (void *)(uintptr_t)0x1122);
 
 	TermNode *setnode = NULL, *promptnode = NULL;
 	setnode = term_node_child_add(root, TYPE_KEY, "set", "set Command", NULL);

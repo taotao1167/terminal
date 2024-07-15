@@ -82,8 +82,15 @@ struct TermNode {
 	struct TermNode *option; /* select will use */
 	struct TermNode *children;
 	struct TermNode *next;
+	TermDynOptionCb dyn_option;
+	void *dyn_option_udata;
 	TermExec exec;
 };
+
+typedef struct TermArg {
+	char *content;
+	struct TermArg *next;
+} TermArg;
 
 struct Terminal {
     char *init_content;
@@ -1133,6 +1140,54 @@ static TermExec node_executable(TermNode *node) {
 	}
 	return node->exec;
 }
+
+static void node_free(TermNode *node) {
+	TermNode *p_node = NULL, *p_next = NULL;
+	for (p_node = node->children; p_node != NULL; p_node = p_next) {
+		p_next = p_node->next;
+		node_free(p_node);
+	}
+	for (p_node = node->option; p_node != NULL; p_node = p_next) {
+		p_next = p_node->next;
+		node_free(p_node);
+	}
+	MY_FREE(node->word);
+	if (node->help != NULL) {
+		MY_FREE(node->help);
+	}
+	MY_FREE(node);
+}
+
+static void update_node_options(TermNode *selector, TermDynOptionCb dyncb, void *userdata) {
+	TermNode *p_node = NULL, *p_next = NULL;
+	char **word = NULL, **help = NULL;
+	int i = 0, num = 0;
+	for (p_node = selector->option; p_node != NULL; p_node = p_next) {
+		p_next = p_node->next;
+		node_free(p_node);
+	}
+	selector->option= NULL;
+	dyncb(userdata, &word, &help, &num);
+	for (i = 0; i < num; i++) {
+		if (term_node_option_add(selector, word[i], help != NULL ? help[i] : NULL) == NULL) {
+			goto func_end;
+		}
+	}
+func_end:
+	if (word != NULL) {
+		for (i = 0; i < num; i++) {
+			free(word[i]);
+		}
+		free(word);
+	}
+	if (help != NULL) {
+		for (i = 0; i < num; i++) {
+			free(help[i]);
+		}
+		free(help);
+	}
+	return;
+}
 static void term_exec_run(Terminal *term, WalkStacked *stacked, int deep) {
 	int i = 0, j = 0, argc = 0, mulsel_len = 0;
 	char **argv = NULL;
@@ -1224,6 +1279,9 @@ static void term_walk(Terminal *term) {
 	while (1) {
 		node = stacked[deep].node;
 		arg = stacked[deep].arg;
+		if (node->dyn_option != NULL) {
+			update_node_options(node, node->dyn_option, node->dyn_option);
+		}
 #if WALK_DEBUG
 		printf("deep:%d, arg:%s =? %s\n", deep, arg ? arg->content : "null", node ? node->word : "null");
 #endif
@@ -1646,23 +1704,6 @@ func_end:
 	return root;
 }
 
-static void node_free(TermNode *node) {
-	TermNode *p_node = NULL, *p_next = NULL;
-	for (p_node = node->children; p_node != NULL; p_node = p_next) {
-		p_next = p_node->next;
-		node_free(p_node);
-	}
-	for (p_node = node->option; p_node != NULL; p_node = p_next) {
-		p_next = p_node->next;
-		node_free(p_node);
-	}
-	MY_FREE(node->word);
-	if (node->help != NULL) {
-		MY_FREE(node->help);
-	}
-	MY_FREE(node);
-}
-
 void term_root_free(TermNode *root) {
 	node_free(root);
 }
@@ -1766,6 +1807,12 @@ int term_node_option_del(TermNode *selector, const char *word) {
 		pre = node;
 	}
 	return !found;
+}
+
+int term_node_dynamic_option(TermNode *selector, TermDynOptionCb cb_func, void *userdata) {
+	selector->dyn_option = cb_func;
+	selector->dyn_option_udata = userdata;
+	return 0;
 }
 
 const char *term_getline(Terminal *term, const char *prefix) {

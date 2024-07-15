@@ -71,17 +71,11 @@ typedef enum NodeType {
 	TYPE_MULSEL,
 } NodeType;
 
-struct Terminal;
-typedef void (* TermExec)(struct Terminal *term, int argc, const char **argv);
-
 typedef struct TermNode TermNode;
-
-typedef struct TermArg {
-	char *content;
-	struct TermArg *next;
-} TermArg;
-
 typedef struct Terminal Terminal;
+
+typedef void (* TermExec)(struct Terminal *term, int argc, const char **argv);
+typedef void (* TermDynOptionCb)(void *userdata, char ***word, char ***help, int *num);
 
 
 extern TermNode *term_root_create();
@@ -90,11 +84,10 @@ extern TermNode *term_node_child_add(TermNode *parent, NodeType type, const char
 extern int term_node_child_del(TermNode *parent, const char *word);
 extern TermNode *term_node_select_add(TermNode *parent, const char *word, TermExec exec);
 extern TermNode *term_node_mulsel_add(TermNode *parent, const char *word, uint32_t flags, TermExec exec);
-extern TermNode *term_node_option_add(TermNode *select, const char *word, const char *help);
-extern int term_node_option_del(TermNode *select, const char *word);
+extern TermNode *term_node_option_add(TermNode *selector, const char *word, const char *help);
+extern int term_node_option_del(TermNode *selector, const char *word);
 
-extern TermNode *term_node_dynamic_children(TermNode *parent, void *cb_func);
-extern TermNode *term_node_dynamic_option(TermNode *select, void *cb_func);
+extern int term_node_dynamic_option(TermNode *selector, TermDynOptionCb cb_func, void *userdata);
 
 extern void term_root_free(TermNode *root);
 
