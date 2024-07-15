@@ -84,13 +84,13 @@ static void cmd_exit(Terminal *term, int argc, const char **argv) {
 static void cmd_dyn_child(void *userdata, char ***word, char ***help, int *num) {
 	int i = 0;
 	*num = 3;
-	*word = (char **)malloc(sizeof(char *) * 3);
+	*word = (char **)malloc(sizeof(char *) * (*num));
 	for (i = 0; i < *num; i++) {
 		(*word)[i] = (char *)malloc(16);
 		sprintf((*word)[i], "%02d", i);
 	}
 #if 1
-	*help = (char **)malloc(sizeof(char *) * 3);
+	*help = (char **)malloc(sizeof(char *) * (*num));
 	for (i = 0; i < *num; i++) {
 		(*help)[i] = (char *)malloc(32);
 		sprintf((*help)[i], "help of %02d", i);

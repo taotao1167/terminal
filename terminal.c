@@ -975,27 +975,29 @@ static void term_output_complete_or_help(Terminal *term) {
 			if (p_lastarg && !term->spacetail && term->command_args != NULL) {
 				tail_arglen = strlen(p_lastarg->content);
 			}
-			start_pos = term->num - tail_arglen;
-			end_pos = start_pos + common_len;
-			if (common_len > tail_arglen) {
-				/* malloc for complete, command_len - tail_arglen is the size that need expand */
-				tt_buffer_swapto_malloced(&(term->line_command), common_len - tail_arglen);
+			if (tail_arglen > 0) { /* null arg for help */
+				start_pos = term->num - tail_arglen;
+				end_pos = start_pos + common_len;
+				if (common_len > tail_arglen) {
+					/* malloc for complete, command_len - tail_arglen is the size that need expand */
+					tt_buffer_swapto_malloced(&(term->line_command), common_len - tail_arglen);
+				}
+				if (memcmp(term->line_command.content + start_pos, term->complete->word, common_len)) {
+					memcpy(term->line_command.content + start_pos, term->complete->word, common_len);
+					completed = 1;
+				}
+				term->line_command.used += common_len - tail_arglen;
+				*(term->line_command.content + end_pos) = '\0';
+				if (term->complete->next == NULL) { /* only one match, add SPACE at the end of word */
+					tt_buffer_swapto_malloced(&(term->line_command), 1); /* malloc for complete SPACE */
+					strcat((char *)(term->line_command.content), " ");
+					end_pos += 1;
+					term->line_command.used += 1;
+					completed = 1;
+				}
+				// printf("term->pos %d, start_pos %d, end_pos %d\n", term->pos, start_pos, end_pos);
+				term_refresh(term, end_pos, end_pos, start_pos);
 			}
-			if (memcmp(term->line_command.content + start_pos, term->complete->word, common_len)) {
-				memcpy(term->line_command.content + start_pos, term->complete->word, common_len);
-				completed = 1;
-			}
-			term->line_command.used += common_len - tail_arglen;
-			*(term->line_command.content + end_pos) = '\0';
-			if (term->complete->next == NULL) { /* only one match, add SPACE at the end of word */
-				tt_buffer_swapto_malloced(&(term->line_command), 1); /* malloc for complete SPACE */
-				strcat((char *)(term->line_command.content), " ");
-				end_pos += 1;
-				term->line_command.used += 1;
-				completed = 1;
-			}
-			// printf("term->pos %d, start_pos %d, end_pos %d\n", term->pos, start_pos, end_pos);
-			term_refresh(term, end_pos, end_pos, start_pos);
 		}
 	}
 	if (completed == 0) { /* print help informations */
@@ -1105,7 +1107,7 @@ static void term_output_complete_or_help(Terminal *term) {
 					term_printf_inner(term, "\n");
 				}
 			}
-		}
+		} /* end only show words */
 		if (executable) {
 			term_printf_inner(term, "<CR>\n");
 		}
