@@ -127,6 +127,7 @@ typedef struct WalkStacked {
 	TermArg *arg;
 	uint64_t checked; /* checked options in TYPE_MULSEL */
 	uint64_t walked; /* walked options in TYPE_MULSEL */
+	int optional; /* TYPE_MULSEL is optional or not */
 	char *exec_argv;
 } WalkStacked;
 
@@ -364,46 +365,6 @@ static void term_cursor_move(Terminal *term, int col_off, int row_off) {
 }
 
 void term_color_set(Terminal *term, unsigned int color) {
-#if defined(_WIN32)
-	CONSOLE_SCREEN_BUFFER_INFO info;
-	static WORD dft_wAttributes = 0;
-	WORD wAttributes = 0;
-	if (!dft_wAttributes) {
-		GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info);
-		dft_wAttributes = info.wAttributes;
-	}
-	if (0 == (color & 0xff)) {
-		wAttributes |= dft_wAttributes & (FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
-	} else {
-		wAttributes |= (color >= TERM_FGCOLOR_BRIGHT_BLACK) ? FOREGROUND_INTENSITY : 0;
-		switch (color & 0xff) {
-			case TERM_FGCOLOR_BRIGHT_RED:	wAttributes |= FOREGROUND_RED;	break;
-			case TERM_FGCOLOR_BRIGHT_GREEN:		wAttributes |= FOREGROUND_GREEN;break;
-			case TERM_FGCOLOR_BRIGHT_BLUE:		wAttributes |= FOREGROUND_BLUE;	break;
-			case TERM_FGCOLOR_BRIGHT_YELLOW:  wAttributes |= FOREGROUND_RED | FOREGROUND_GREEN;	break;
-			case TERM_FGCOLOR_BRIGHT_MAGENTA: wAttributes |= FOREGROUND_RED | FOREGROUND_BLUE;	break;
-			case TERM_FGCOLOR_BRIGHT_CYAN:	wAttributes |= FOREGROUND_GREEN | FOREGROUND_BLUE;	break;
-			case TERM_FGCOLOR_BRIGHT_WHITE:   wAttributes |= FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;break;
-		}
-	}
-	if (TERM_BGCOLOR_DEFAULT == (color & 0xff00)) {
-		wAttributes |= dft_wAttributes & (BACKGROUND_RED | BACKGROUND_GREEN | BACKGROUND_BLUE | BACKGROUND_INTENSITY);
-	} else {
-		wAttributes |= (color >= TERM_BGCOLOR_BRIGHT_BLACK) ? BACKGROUND_INTENSITY : 0;
-		switch ((color & 0xff00)) {
-			case TERM_BGCOLOR_BRIGHT_RED:	wAttributes |= BACKGROUND_RED;	break;
-			case TERM_BGCOLOR_BRIGHT_GREEN:		wAttributes |= BACKGROUND_GREEN;break;
-			case TERM_BGCOLOR_BRIGHT_BLUE:		wAttributes |= BACKGROUND_BLUE;	break;
-			case TERM_BGCOLOR_BRIGHT_YELLOW:  wAttributes |= BACKGROUND_RED | BACKGROUND_GREEN;	break;
-			case TERM_BGCOLOR_BRIGHT_MAGENTA: wAttributes |= BACKGROUND_RED | BACKGROUND_BLUE;	break;
-			case TERM_BGCOLOR_BRIGHT_CYAN:	wAttributes |= BACKGROUND_GREEN | BACKGROUND_BLUE;	break;
-			case TERM_BGCOLOR_BRIGHT_WHITE:   wAttributes |= BACKGROUND_RED | BACKGROUND_GREEN | BACKGROUND_BLUE;break;
-		}
-	}
-	if (color & TERM_STYLE_UNDERSCORE)
-		{ wAttributes |= COMMON_LVB_UNDERSCORE; }
-	SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), wAttributes);
-#else
 	term_printf_inner(term, "\033[0m");
 	if (color & 0xff) {
 		term_printf_inner(term, "\033[%dm", color & 0xff);
@@ -423,7 +384,6 @@ void term_color_set(Terminal *term, unsigned int color) {
 	if (color & TERM_STYLE_INVERSE) {
 		term_printf_inner(term, "\033[7m");
 	}
-#endif
 }
 
 int term_prompt_set(Terminal *term, const char *prompt) {
@@ -564,18 +524,26 @@ void term_destroy(Terminal *term) {
 
 int term_create(Terminal **_term, const char *prompt, TermNode *root, const char *init_content) {
 	int ret = -1, not_support = 0;
-	char *term_env = NULL;
 	Terminal *term = NULL;
 
+#if defined(_WIN32)
+	HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+	if (hOut == INVALID_HANDLE_VALUE) {
+		return GetLastError();
+	}
+
+	DWORD dwMode = 0;
+	if (!GetConsoleMode(hOut, &dwMode)) {
+		return GetLastError();
+	}
+
+	dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+	if (!SetConsoleMode(hOut, dwMode)){
+		return GetLastError();
+	}
+#endif
 	if (!isatty(STDIN_FILENO)) {  // input is not from a terminal
 		not_support = 1;
-	} else {
-		term_env = getenv("TERM");
-		if (NULL != term_env) {
-			if (!strcasecmp(term_env, "dumb") || !strcasecmp(term_env, "cons25") ||  !strcasecmp(term_env, "emacs")) {
-				not_support = 1;
-			}
-		}
 	}
 	if (not_support) {
 		printf("not support\n");
@@ -1022,7 +990,7 @@ static void term_output_complete_or_help(Terminal *term) {
 		term_printf_inner(term, "\n");
 		if (with_help) { /* print word and help line by line */
 			for (p_com = term->complete; p_com != NULL; p_com = p_com->next) {
-				term_color_set(term, TERM_STYLE_BOLD);
+				term_color_set(term, TERM_FGCOLOR_BRIGHT_BLUE);
 				term_printf_inner(term, "%s", p_com->word);
 				term_color_set(term, TERM_COLOR_DEFAULT);
 				if (p_com->help != NULL) {
@@ -1032,7 +1000,7 @@ static void term_output_complete_or_help(Terminal *term) {
 				}
 			}
 			for (p_com = term->hints; p_com != NULL; p_com = p_com->next) {
-				term_color_set(term, TERM_STYLE_UNDERSCORE);
+				term_color_set(term, TERM_FGCOLOR_BRIGHT_CYAN);
 				term_printf_inner(term, "%s", p_com->word);
 				term_color_set(term, TERM_COLOR_DEFAULT);
 				if (p_com->help != NULL) {
@@ -1063,7 +1031,7 @@ static void term_output_complete_or_help(Terminal *term) {
 					if (i != 0) {
 						term_printf_inner(term, "  ");
 					}
-					term_color_set(term, TERM_STYLE_BOLD);
+					term_color_set(term, TERM_FGCOLOR_BRIGHT_BLUE);
 					term_printf_inner(term, "%s", p_com->word);
 					term_color_set(term, TERM_COLOR_DEFAULT);
 				}
@@ -1071,7 +1039,7 @@ static void term_output_complete_or_help(Terminal *term) {
 					if (i != 0) {
 						term_printf_inner(term, "  ");
 					}
-					term_color_set(term, TERM_STYLE_UNDERSCORE);
+					term_color_set(term, TERM_FGCOLOR_BRIGHT_CYAN);
 					term_printf_inner(term, "%s", p_com->word);
 					term_color_set(term, TERM_COLOR_DEFAULT);
 				}
@@ -1087,7 +1055,7 @@ static void term_output_complete_or_help(Terminal *term) {
 					} else {
 						term_printf_inner(term, "  ");
 					}
-					term_color_set(term, TERM_STYLE_BOLD);
+					term_color_set(term, TERM_FGCOLOR_BRIGHT_BLUE);
 					term_printf_inner(term, "%s", p_com->word);
 					term_color_set(term, TERM_COLOR_DEFAULT);
 					term_printf_inner(term, "%*s", word_width - strlen(p_com->word), "");
@@ -1098,7 +1066,7 @@ static void term_output_complete_or_help(Terminal *term) {
 					} else {
 						term_printf_inner(term, "  ");
 					}
-					term_color_set(term, TERM_STYLE_UNDERSCORE);
+					term_color_set(term, TERM_FGCOLOR_BRIGHT_CYAN);
 					term_printf_inner(term, "%s", p_com->word);
 					term_color_set(term, TERM_COLOR_DEFAULT);
 					term_printf_inner(term, "%*s", word_width - strlen(p_com->word), "");
@@ -1290,12 +1258,32 @@ static void term_walk(Terminal *term) {
 		match = MATCH_NONE;
 
 		if ((node->type == TYPE_SELECT || node->type == TYPE_MULSEL) && node_get_option(node) != NULL) { /* process children in selector */
-			stacked[deep].walked = 0;
-			stacked[deep].checked = 0;
-			stacked[deep + 1].node = node_get_option(node);
-			stacked[deep + 1].arg = arg;
-			deep++;
-			continue;
+			if (stacked[deep].optional == 0) {
+				stacked[deep].walked = 0;
+				stacked[deep].checked = 0;
+				stacked[deep + 1].node = node_get_option(node);
+				stacked[deep + 1].arg = arg;
+				deep++;
+				continue;
+			} else {
+				if (arg == NULL) {
+					stacked[deep + 1].node = node_get_option(node);
+					stacked[deep + 1].arg = arg;
+					deep++;
+					term_exec_run(term, stacked, deep);
+					memset(&stacked[deep], 0x00, sizeof(WalkStacked));
+					deep--;
+				}
+				if (node->children != NULL) {
+					stacked[deep + 1].node = node_get_option(node);
+					stacked[deep + 1].arg = arg;
+					deep++;
+					stacked[deep + 1].node = node->children;
+					stacked[deep + 1].arg = arg;
+					deep++;
+					continue;
+				}
+			}
 		}
 		if (node->selector != NULL && node->selector->type == TYPE_MULSEL) {
 			stacked[deep - 1].walked |= (1 << node->option_index);
@@ -1344,7 +1332,7 @@ static void term_walk(Terminal *term) {
 			if (node_executable(node) != NULL && arg->next == NULL) {
 				term_exec_run(term, stacked, deep);
 			}
-			if (arg->next || term->spacetail) {
+			if (arg->next != NULL || term->spacetail) {
 				/* current match, and need check children */
 				if (node->selector != NULL) { /* is option in TYPE_SELECT or TYPE_MULSEL */
 					if (node->selector->type == TYPE_SELECT) {
@@ -1376,19 +1364,15 @@ static void term_walk(Terminal *term) {
 					break;
 				}
 			}
-		} else {
-			if (node->selector != NULL && node->selector->type == TYPE_MULSEL) {
-				next = node_get_unmasked_option(node, stacked[deep - 1].walked);
-				if (next == NULL && (node->selector->flags & MULSEL_OPTIONAL) && stacked[deep - 1].checked == 0 && node->selector->children != NULL) {
-					/* all option walked but nothing match */
-					stacked[deep + 1].node = node->selector->children;
-					stacked[deep + 1].arg = arg;
-					deep++;
-					continue;
-				}
-			}
 		}
-		if (node->selector != NULL && node->selector->type == TYPE_MULSEL) {
+
+		/* walk next node */
+		if (node->type == TYPE_MULSEL && (node->flags & MULSEL_OPTIONAL) && stacked[deep].optional == 0) {
+			stacked[deep].optional = 1;
+			stacked[deep].checked = 0;
+			stacked[deep].walked = ~0;
+			next = node;
+		} else if (node->selector != NULL && node->selector->type == TYPE_MULSEL) {
 			next = node_get_unmasked_option(node, stacked[deep - 1].walked);
 		} else {
 			next = node->next;
@@ -1401,7 +1385,12 @@ static void term_walk(Terminal *term) {
 				break;
 			}
 			node = stacked[deep].node;
-			if (node->selector != NULL && node->selector->type == TYPE_MULSEL) { /* one option in mulsel walked */
+			if (node->type == TYPE_MULSEL && (node->flags & MULSEL_OPTIONAL) && stacked[deep].optional == 0) {
+				stacked[deep].optional = 1;
+				stacked[deep].checked = 0;
+				stacked[deep].walked = ~0;
+				next = node;
+			} else if (node->selector != NULL && node->selector->type == TYPE_MULSEL) { /* one option in mulsel walked */
 				next = node_get_unmasked_option(node, stacked[deep - 1].walked);
 			} else {
 				next = node->next;
